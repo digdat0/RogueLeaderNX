@@ -179,13 +179,16 @@ int main(int argc, char** argv) {
         // draw text), not on a text console. The boot font has upper case only. + leaves, as the console screen did.
         banner("no disc image: put your Rogue Leader .iso/.rvz in %s", RL_SD_ROOT);
         rt::gfx::switchInit();
+        // RL-NX: no button reached this loop. Nothing had told hid which controller styles this app wants (the game's
+        // SDL gamepad init, which does, runs later), so configure them here and read all pads, not just the default one.
+        padConfigureInput(8, HidNpadStyleSet_NpadStandard | HidNpadStyleTag_NpadHandheld);
         PadState pad = {};
-        padInitializeDefault(&pad);
+        padInitializeAny(&pad);
         while (appletMainLoop()) {
             padUpdate(&pad);
-            if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
+            if (padGetButtonsDown(&pad) & (HidNpadButton_Plus | HidNpadButton_A | HidNpadButton_B)) break;
             aurora_switch_dk_boot_screen("ROGUELEADER-NX", -1.0f, "NO DISC IMAGE FOUND",
-                                         "PUT YOUR ROGUE LEADER .ISO OR .RVZ IN SDMC:/SWITCH/RL-NX   PRESS + TO EXIT");
+                                         "PUT YOUR ROGUE LEADER .ISO OR .RVZ IN SDMC:/SWITCH/ROGUELEADER-NX   PRESS + TO EXIT");
         }
         // RL-NX: + did nothing with a plain exit(0) here (Aurora's threads are running). Leave as the updater's restart does:
         // stop Aurora, give the GPU back, end the threads, then libnx returns to hbloader (the homebrew menu).
