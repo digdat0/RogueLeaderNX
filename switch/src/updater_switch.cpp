@@ -2,7 +2,7 @@
 //
 // Each press of A advances one step:
 //   idle/up to date/failed -> check: ask the GitHub API for the latest release of digdat0/rogue-leader-nx
-//   available              -> download: fetch the release's RL-NX.nro to cache/update.nro and verify it
+//   available              -> download: fetch the release's RogueLeader-NX.nro to cache/update.nro and verify it
 //   ready                  -> install: swap the new NRO in, ask the Homebrew loader to start it next, quit
 //
 // Network work runs on a detached thread so the game keeps rendering; the menu polls rlUpdaterStatus each
@@ -38,14 +38,14 @@ extern "C" int rlnxRelaunchRequested(void) { return g_quitGo ? 1 : 0; }
 namespace {
 
 constexpr const char* kLatestUrl = "https://api.github.com/repos/digdat0/RogueLeaderNX/releases/latest";
-constexpr const char* kAssetName = "RL-NX.nro";
-constexpr const char* kAppDir = "sdmc:/switch/RL-NX/";
+constexpr const char* kAssetName = "RogueLeader-NX.nro";
+constexpr const char* kAppDir = "sdmc:/switch/RogueLeader-NX/";
 // The download goes to cache/ so the app folder only ever holds the NRO, the disc image and folders.
 // kOldPath keeps the replaced NRO until the next start, when rlUpdaterApplyPending deletes it.
-constexpr const char* kPartPath = "sdmc:/switch/RL-NX/cache/update.nro";
-constexpr const char* kOldPath = "sdmc:/switch/RL-NX/cache/previous.nro";
-constexpr const char* kTokenPath = "sdmc:/switch/RL-NX/config/github_token";
-constexpr const char* kDefaultNro = "sdmc:/switch/RL-NX/RL-NX.nro";
+constexpr const char* kPartPath = "sdmc:/switch/RogueLeader-NX/cache/update.nro";
+constexpr const char* kOldPath = "sdmc:/switch/RogueLeader-NX/cache/previous.nro";
+constexpr const char* kTokenPath = "sdmc:/switch/RogueLeader-NX/config/github_token";
+constexpr const char* kDefaultNro = "sdmc:/switch/RogueLeader-NX/RogueLeader-NX.nro";
 
 // Updater state machine (see the top of the file). g_state is read by the menu thread and written by the
 // worker thread, so it and the progress percentage are atomics; g_message is guarded by g_mutex.
@@ -338,7 +338,7 @@ bool download_one(const Asset& asset, std::string* why) {
 
 // Worker thread for "download": copies the asset list under the lock, then downloads each asset.
 void download_worker() {
-    mkdir("sdmc:/switch/RL-NX/cache", 0777);  // RL-NX: the download goes to cache/update.nro
+    mkdir("sdmc:/switch/RogueLeader-NX/cache", 0777);  // RL-NX: the download goes to cache/update.nro
     std::vector<Asset> assets;
     std::string tag;
     {
@@ -391,7 +391,7 @@ bool install() {
 // .new/.old there), plus the previous NRO and any half-finished download from cache/.
 extern "C" void rlUpdaterApplyPending(void) {
     for (const char* name : {"initial_pipeline_cache.db", "initial_dksh_cache.bin", "initial_pipeline_cache.db.new",
-                             "initial_dksh_cache.bin.new", "RL-NX.nro.new", "RL-NX.nro.old"}) {
+                             "initial_dksh_cache.bin.new", "RL-NX.nro.new", "RL-NX.nro.old", "RogueLeader-NX.nro.new", "RogueLeader-NX.nro.old"}) {
         std::remove((std::string(kAppDir) + name).c_str());
     }
     std::remove(kPartPath);
@@ -483,7 +483,7 @@ extern "C" void rlUpdaterActivate(void) {
         std::thread(download_worker).detach();
     } else if (state == kReady) {
         if (!install()) {
-            set_state(kFailed, "Could not replace RL-NX.nro");
+            set_state(kFailed, "Could not replace RogueLeader-NX.nro");
             return;
         }
         // Ask hbloader to start the new NRO when this one exits. Without that support (some loaders) the

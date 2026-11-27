@@ -24,11 +24,11 @@ is emulated in software. **No game data is included.** You need your own disc im
 
 ## Installing
 
-Copy `RL-NX.nro` and your disc image into the same folder on the SD card:
+Copy `RogueLeader-NX.nro` and your disc image into the same folder on the SD card:
 
 ```
-sdmc:/switch/RL-NX/RL-NX.nro
-sdmc:/switch/RL-NX/<your Rogue Leader disc>.rvz      (any name; one image only)
+sdmc:/switch/RogueLeader-NX/RL-NX.nro
+sdmc:/switch/RogueLeader-NX/<your Rogue Leader disc>.rvz      (any name; one image only)
 ```
 
 Start it from the Homebrew Menu under title takeover. The first start builds the shader cache, which takes
@@ -65,13 +65,13 @@ game sees no controller input.
 | UPDATE | looks for a newer release on GitHub and installs it |
 
 The **Debug** tab (performance and diagnostic switches) is hidden by default. Add the line
-`R2_DEBUG_MENU=1` to `sdmc:/switch/RL-NX/config/settings.cfg` to show it (the game creates the file when you first switch a row; any other line in it is kept). Normal play needs no edits.
+`R2_DEBUG_MENU=1` to `sdmc:/switch/RogueLeader-NX/config/settings.cfg` to show it (the game creates the file when you first switch a row; any other line in it is kept). Normal play needs no edits.
 
 Settings are remembered between runs. Delete `config/settings.cfg` to go back to the defaults.
 
 ## HD textures
 
-RL-NX can load a Dolphin-format texture pack from `sdmc:/switch/RL-NX/mods/hd/`.
+RL-NX can load a Dolphin-format texture pack from `sdmc:/switch/RogueLeader-NX/mods/hd/`.
 
 **Credit goes to General_Han_Solo for the HD texture pack.** Nothing was changed in the textures except
 down-sampling them to a size that performs well on the Switch 1. The conversion tool,
@@ -83,7 +83,7 @@ resolution.
 - Original pack: <https://emulationking.com/nintendo/gamecube/games/starwarsroguesquadroniirogueleader/texturepacks/generalhansolo/>
 - Dolphin Emulator Forum thread: <https://forums.dolphin-emu.org/Thread-star-wars-rogue-leader-rebel-strike-jedi-knight-23rd-march-2026>
 
-To use it, unpack the pack's `GSWE64` folder into `sdmc:/switch/RL-NX/mods/hd/`, then switch **HD TEXTURES**
+To use it, unpack the pack's `GSWE64` folder into `sdmc:/switch/RogueLeader-NX/mods/hd/`, then switch **HD TEXTURES**
 on in the `-` menu.
 
 ## Updating
@@ -91,7 +91,7 @@ on in the `-` menu.
 The **UPDATE** row in the Game tab asks GitHub for the latest release of
 [digdat0/RogueLeaderNX](https://github.com/digdat0/RogueLeaderNX/releases). If there is a newer release it
 offers to download it; if there is none, nothing is offered. After the download it asks to restart and
-starts the new version by itself. You can also copy a new `RL-NX.nro` over the old one by hand.
+starts the new version by itself. You can also copy a new `RogueLeader-NX.nro` over the old one by hand.
 
 ## Reporting a problem
 
@@ -99,7 +99,7 @@ Open an issue on the [Issues](../../issues/new/choose) page. Please include:
 
 - the version (shown in the log's first line),
 - what happened, in which mission or menu, and whether it happens every time,
-- **the log**: `sdmc:/switch/RL-NX/logs/log.txt` from the session where it happened (copy it before
+- **the log**: `sdmc:/switch/RogueLeader-NX/logs/log.txt` from the session where it happened (copy it before
   starting the game again, because each start replaces it). Turn **GAME LOGGING** on in the `-` menu first
   if you can, since it adds detail. The log shows paths from your SD card but nothing else personal,
 - a screenshot or a short video for anything you can see.
@@ -115,7 +115,7 @@ bash switch/tools/prepare-refs.sh   # once: fetches the reference trees
 bash switch/build-dawn.sh           # once
 bash switch/build-sdl.sh            # once
 
-RL_NX_DEKO=1 bash switch/build.sh 8     # -> build-switch/RL-NX.nro (deko3d, the console build)
+RL_NX_DEKO=1 bash switch/build.sh 8     # -> build-switch/RogueLeader-NX.nro (deko3d, the console build)
 ```
 
 `switch/README.md` covers the toolchain and a black-screen checklist, `AGENTS.md` is the working brief

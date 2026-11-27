@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""Turn an RL-NX profiler report (sdmc:/switch/RL-NX/logs/profile-NNN.txt) into per-function times.
+r"""Turn an RL-NX profiler report (sdmc:/switch/RogueLeader-NX/logs/profile-NNN.txt) into per-function times.
 
     py -3 switch/tools/prof_report.py <profile-NNN.txt ...> [elf] [--top N] [--callers N]
     example: py -3 switch/tools/prof_report.py "logs/profile-*.txt" debug/RL-NX-1556.elf

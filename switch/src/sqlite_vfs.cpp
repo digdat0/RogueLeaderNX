@@ -413,7 +413,7 @@ int open(sqlite3_vfs*, const char* name, sqlite3_file* base, int flags, int* act
     if (!name) {
         u64 nonce;
         randomGet(&nonce, sizeof(nonce));
-        std::snprintf(temporary, sizeof(temporary), "sdmc:/switch/RL-NX/cache/tmp-%016llx.db",
+        std::snprintf(temporary, sizeof(temporary), "sdmc:/switch/RogueLeader-NX/cache/tmp-%016llx.db",
                       static_cast<unsigned long long>(nonce));
         name = temporary;
         flags |= SQLITE_OPEN_CREATE | SQLITE_OPEN_EXCLUSIVE | SQLITE_OPEN_DELETEONCLOSE;

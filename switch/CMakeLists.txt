@@ -5,7 +5,7 @@
 # Dawn Null backend with no picture. The deko3d renderer is then switched on with -DRL_NX_DEKO=ON,
 # which needs switch/deko ported to this Aurora's gfx::present/window seams (see §D.3).
 cmake_minimum_required(VERSION 3.25)
-project(rl-nx LANGUAGES C CXX ASM VERSION 1.2)
+project(rl-nx LANGUAGES C CXX ASM VERSION 0.1.0)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
@@ -195,6 +195,8 @@ add_library(rl_entry STATIC
   "${CMAKE_CURRENT_LIST_DIR}/src/audio_switch.cpp")
 target_include_directories(rl_entry PRIVATE
   "${CMAKE_CURRENT_LIST_DIR}/include" "${CMAKE_CURRENT_LIST_DIR}/src" "${RL_ROOT}/src/runtime")
+target_include_directories(rl_entry PRIVATE "${RL_ROOT}/build-switch")  # RL-NX: build_number.h (build.sh)
+target_compile_definitions(rl_entry PRIVATE RL_NX_VERSION="${PROJECT_VERSION}")  # RL-NX: the - menu version line
 target_compile_definitions(rl_entry PRIVATE TARGET_PC)  # Aurora headers: see the note on `runtime`
 target_compile_options(rl_entry PRIVATE -O2 -fno-strict-aliasing -w)
 set_target_properties(rl_entry PROPERTIES CXX_COMPILER_LAUNCHER "${CMAKE_CURRENT_LIST_DIR}/cmake/clang-game-cxx.sh")

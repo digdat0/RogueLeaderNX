@@ -44,7 +44,7 @@ void setAsyncVblank(bool on);  // RL-NX (audit 2026-11-27): ASYNC VBLANK
 bool asyncVblankOn();
 void setCpLag(bool on);  // RL-NX (Stage 11): CP LAG - with GP RAW, CP register reads report the worker's progress (no drain)
 bool cpLagOn();
-void setHdTextures(bool on);  // RL-NX (Stage 12): HD TEXTURES - Dolphin-format packs from sdmc:/switch/RL-NX/mods/hd
+void setHdTextures(bool on);  // RL-NX (Stage 12): HD TEXTURES - Dolphin-format packs from sdmc:/switch/RogueLeader-NX/mods/hd
 bool hdTexturesOn();
 }
 namespace rt::input {
@@ -58,6 +58,7 @@ extern "C" int rlUpdaterState(int* percent, char* tag, size_t tagSize);
 extern "C" void rlUpdaterMessage(char* out, size_t size);
 extern "C" void rl_log_set_extra(int on);  // RL-NX (2026-11-27): GAME LOGGING row (log_switch.cpp)
 extern "C" int rl_log_extra_on;
+extern "C" const char rl_nx_version_label[];  // RL-NX (2026-11-27): "v0.1.0 4561" (main_switch.cpp)
 namespace rt {
 void gxSetFastPipe(bool on);  // RL-NX (Stage 4): FAST PIPE - gather pipe stores straight into the buffer (gx_fifo.cpp)
 bool gxFastPipe();
@@ -154,9 +155,9 @@ void syncRows() {
 // (R2_PROFILE=<seconds>), so it is saved as R2_PROFILER and switched on from boot by menuApplyBootPrefs.
 constexpr const char* kPrefKeys[kRowCount] = {"R2_FPS", "R2_STATS", "R2_PROFILER", "R2_PERFLOG", "R2_GPU_TIMING",
                                               "R2_BRIDGE_THREAD", "R2_GP_THREAD", "R2_AUDIO_THREAD", "R2_FAST_PIPE", "R2_GP_RAW", "R2_FRAME_OVERLAP", "R2_NATIVE_MTX", "R2_VM_CENSUS", "R2_NATIVE_MOVIE", "R2_CP_LAG", "R2_HD_TEXTURES", "R2_ASYNC_VBLANK", "R2_DSP_FAST", "R2_INVERT_FLIGHT", "R2_RUMBLE", "R2_GAME_LOG"};  // RL-NX (2026-11-27): R2_HD_LIMIT row removed (an old menu.cfg line is ignored)
-constexpr const char* kPrefDir = "sdmc:/switch/RL-NX/config";
-constexpr const char* kPrefPath = "sdmc:/switch/RL-NX/config/settings.cfg";  // RL-NX (2026-11-27): was menu.cfg; boot.cfg is gone, this is the only options file
-constexpr const char* kPrefTmp = "sdmc:/switch/RL-NX/config/settings.cfg.tmp";
+constexpr const char* kPrefDir = "sdmc:/switch/RogueLeader-NX/config";
+constexpr const char* kPrefPath = "sdmc:/switch/RogueLeader-NX/config/settings.cfg";  // RL-NX (2026-11-27): was menu.cfg; boot.cfg is gone, this is the only options file
+constexpr const char* kPrefTmp = "sdmc:/switch/RogueLeader-NX/config/settings.cfg.tmp";
 int s_bootPref[kRowCount];  // -1: not in the file
 
 void savePrefs() {
@@ -363,15 +364,11 @@ extern "C" bool rl_nx_menu_draw() {
     int sw = 0, sh = 0;
     swdk::surface_size(&sw, &sh);
     if (sw <= 0 || sh <= 0) return false;
-    // RL-NX (2026-11-27): larger panel and text: the biggest scale (3..6) at which the tallest tab (Debug's rows when it is
-    // shown, else Game's) takes at most 88% of the height and 92% of the width; 4 at 720p with Debug, 5 without.
-    const int nMax = debug ? (kDebugN > kGameN ? kDebugN : kGameN) : kGameN;
-    const auto panelH = [&](int sc, int rows) {
-        const int ins = 2 * sc + 2 + sc + 2 + 5 * sc;
-        return 2 * ins + (6 * sc + 4) * (1 + (debug ? 1 : 0) + rows) + 2 * (2 * sc) + (debug ? 2 : 1) * (6 * (sc - 1) + 7);
-    };
-    int scale = 6;
-    while (scale > 3 && (panelH(scale, nMax) > sh * 88 / 100 || (30 * 4 * scale + 2 * (2 * scale + 2 + scale + 2 + 5 * scale)) > sw * 92 / 100)) scale--;
+    // RL-NX (2026-11-27): large text: scale 6 at 720p (24x36 px cells' worth of letters), 8 at 1080p. The Game tab fits whole; the Debug tab's
+    // 16 rows do not, so it shows as many rows as fit and scrolls with the selection (its range is printed on the tab line).
+    int scale = sh / 120;
+    if (scale < 3) scale = 3;
+    if (scale > 8) scale = 8;
     const int fs = scale - 1;                   // the footer's scale
     const int cw = 4 * scale, lineH = 6 * scale + 4;
     const int rule = 2 * scale;                 // a divider line's gap
@@ -380,9 +377,18 @@ extern "C" bool rl_nx_menu_draw() {
     const int inset = border + 2 + frame + 2 + pad;  // panel edge to content
     const int contentW = 30 * cw;
     const int footH = 6 * fs + 7;
-    const int nFoot = debug ? 2 : 1;
+    const int nFoot = (debug ? 2 : 1) + 1;      // the button lines, then the version line
+    const int fixedH = 2 * inset + lineH + (debug ? lineH : 0) + 2 * rule + nFoot * footH;
+    int vis = (sh * 94 / 100 - fixedH) / lineH;
+    if (vis > n) vis = n;
+    if (vis < 3) vis = 3;
+    static int off = 0;                         // render worker only: first row shown
+    if (sel < off) off = sel;
+    if (sel >= off + vis) off = sel - vis + 1;
+    if (off + vis > n) off = n - vis;
+    if (off < 0) off = 0;
     const int W = contentW + 2 * inset;
-    const int H = 2 * inset + lineH + (debug ? lineH : 0) + rule + n * lineH + rule + nFoot * footH;
+    const int H = fixedH + vis * lineH;
     const int x0 = (sw - W) / 2, y0 = (sh - H) / 2;
     const auto box = [&](int d, const float* c) { swdk::draw_rect(x0 + d, y0 + d, W - 2 * d, H - 2 * d, c); };
     box(0, kGold);
@@ -408,14 +414,21 @@ extern "C" bool rl_nx_menu_draw() {
         const char* dl[1] = {d};
         swdk::draw_text(tx, y, scale, gl, 1, tab == 0 ? kGold : kDim, tab == 0 ? kBgRow : kBg);
         swdk::draw_text(tx + gw + gap, y, scale, dl, 1, tab == 1 ? kGold : kDim, tab == 1 ? kBgRow : kBg);
+        if (vis < n) {  // scrolled: which rows are on show
+            char rng[24];
+            snprintf(rng, sizeof rng, "%d-%d/%d", off + 1, off + vis, n);
+            const char* rl[1] = {rng};
+            swdk::draw_text(x0 + W - inset - (int(strlen(rng)) * 4 + 1) * fs, y + (lineH - 6 * fs) / 2, fs, rl, 1, kDim, kBg);
+        }
         y += lineH;
     }
     swdk::draw_rect(cx, y, contentW, scale, kLine);
     y += rule;
-    for (int i = 0; i < n; i++) {
+    for (int k = 0; k < vis; k++) {
+        const int i = off + k;
         const bool here = i == sel;
         const int r = rows[i];
-        const int rowY = y + i * lineH;
+        const int rowY = y + k * lineH;
         if (here) swdk::draw_rect(cx - pad / 2, rowY - 2, contentW + pad, lineH, kBgRow);
         char buf[40];
         snprintf(buf, sizeof buf, "%c %s", here ? '>' : ' ', r == kUpdate ? "UPDATE" : kNames[r]);
@@ -445,10 +458,16 @@ extern "C" bool rl_nx_menu_draw() {
         const char* val[1] = {on ? "ON" : "OFF"};
         swdk::draw_text(cx + 21 * cw, rowY, scale, val, 1, on ? kGreen : kDim, here ? kBgRow : kBg);
     }
-    y += n * lineH;
+    y += vis * lineH;
     swdk::draw_rect(cx, y, contentW, scale, kLine);
     y += rule;
     centred("UP/DOWN MOVE   A SWITCH   - CLOSE", fs, y, kText, kBg);
     if (debug) centred("L/R OR LEFT/RIGHT: GAME / DEBUG", fs, y + footH, kText, kBg);
+    {  // RL-NX (2026-11-27): version and build, e.g. V0.1.0 4561 (main_switch.cpp; the build number counts build.sh runs)
+        char ver[48];
+        snprintf(ver, sizeof ver, "%s", rl_nx_version_label);
+        for (char* q = ver; *q; ++q) *q = char(toupper(static_cast<unsigned char>(*q)));
+        centred(ver, fs, y + nFoot * footH - footH, kDim, kBg);
+    }
     return true;
 }

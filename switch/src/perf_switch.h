@@ -1,5 +1,5 @@
 /* Performance settings and telemetry for the Switch layer (perf_switch.cpp, prof_switch.cpp).
-   Tuning knobs come from sdmc:/switch/RL-NX/config/perf.cfg, one "key value" per line; the file is
+   Tuning knobs come from sdmc:/switch/RogueLeader-NX/config/perf.cfg, one "key value" per line; the file is
    optional and every knob has a default. The melee_nx_ names come from Melee-NX, where this layer started. */
 #pragma once
 #include <stdint.h>

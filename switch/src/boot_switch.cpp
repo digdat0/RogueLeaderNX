@@ -109,7 +109,7 @@ u32 bootDiscSwitch() {
 // Naming it game.iso is the simple case; anything else in the folder is picked up in name order, so
 // a card with one image in it just works.
 std::string findDiscSwitch() {
-    const char* kDirs[] = {"sdmc:/switch/RL-NX", "sdmc:/switch", "sdmc:/"};
+    const char* kDirs[] = {"sdmc:/switch/RogueLeader-NX", "sdmc:/switch", "sdmc:/"};
     const char* kExts[] = {".iso", ".gcm", ".rvz", ".wia"};
     std::string best;
     for (const char* dir : kDirs) {

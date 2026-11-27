@@ -624,7 +624,7 @@ void bridgeShutdown() {
 
 #if defined(__SWITCH__)
 // RL-NX (Stage 12): HD TEXTURES (- menu rows HD TEXTURES and HD TEX 2048; R2_HD_TEXTURES, R2_HD_LIMIT). Dolphin-format
-// texture packs (tex1_<w>x<h>_<hash>_<fmt>.dds / .png, any folder layout) under sdmc:/switch/RL-NX/mods/hd are
+// texture packs (tex1_<w>x<h>_<hash>_<fmt>.dds / .png, any folder layout) under sdmc:/switch/RogueLeader-NX/mods/hd are
 // registered with Aurora's replacement registry, the one the desktop Red Two uses for Dolphin packs: Aurora hashes
 // each game texture as Dolphin does and streams a matching file in on its texture workers (the game's own texture
 // until it is ready). HD TEX 2048 (on by default) has Aurora drop the top mip levels of anything larger than 2048
@@ -634,7 +634,7 @@ void bridgeShutdown() {
 std::atomic<int> s_hdWant{-1}, s_hdLimitWant{-1};
 bool s_hdOn = false, s_hdLimit = true;
 aurora::texture::ReplacementGroup s_hdGroup;
-constexpr const char* kHdDir = "sdmc:/switch/RL-NX/mods/hd";
+constexpr const char* kHdDir = "sdmc:/switch/RogueLeader-NX/mods/hd";
 void hdApply(bool on) {
     if (s_hdOn) {
         aurora::texture::unregister_replacements(s_hdGroup);
@@ -3048,7 +3048,7 @@ void onCommand(const u8* p, u32 len) {
             char name[96];
 #ifdef __SWITCH__
             // RL-NX: on the Switch the working directory is not the app's folder: "build/" never opened
-            snprintf(name, sizeof name, "sdmc:/switch/RL-NX/logs/gx_frame_%llu.txt", (unsigned long long)s_frames);
+            snprintf(name, sizeof name, "sdmc:/switch/RogueLeader-NX/logs/gx_frame_%llu.txt", (unsigned long long)s_frames);
 #else
             snprintf(name, sizeof name, "build/gx_frame_%llu.txt", (unsigned long long)s_frames);
 #endif
@@ -3649,8 +3649,8 @@ bool switchInit() {
     cfg.appName = "RL-NX";
     // RL-NX: SD layout (2026-11-26) - the folder root holds only the NRO and the disc; Aurora's user files
     // (input.json, imgui.ini) live in config/ and its caches (dawn_cache.db, pipeline_cache.db) in cache/aurora/.
-    cfg.userPath = "sdmc:/switch/RL-NX/config/";
-    cfg.cachePath = "sdmc:/switch/RL-NX/cache/aurora/";
+    cfg.userPath = "sdmc:/switch/RogueLeader-NX/config/";
+    cfg.cachePath = "sdmc:/switch/RogueLeader-NX/cache/aurora/";
     cfg.desiredBackend = BACKEND_AUTO;
     cfg.msaa = 1;
     cfg.vsync = false;

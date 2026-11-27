@@ -243,7 +243,7 @@ bool writePng(const std::string& path, u32 w, u32 h, const u8* rgba) {
 
 // RL-NX: on the Switch the process working directory is the SD card root, so a relative R2_TEX_DUMP used to
 // create sdmc:/<name> - a directory nobody looks in, and it failed silently if anything went wrong. Relative
-// paths now land beside logs/ (sdmc:/switch/RL-NX/<name>), and the resolved path is logged so the user can
+// paths now land beside logs/ (sdmc:/switch/RogueLeader-NX/<name>), and the resolved path is logged so the user can
 // find the files without guessing.
 const char* directory() {
     static const std::string dir = [] {
@@ -251,7 +251,7 @@ const char* directory() {
         if (!d || !*d) return std::string();
         std::string s = d;
 #if defined(__SWITCH__)
-        if (s[0] != '/' && !(s.size() > 1 && s[1] == ':')) s = std::string("sdmc:/switch/RL-NX/") + s;
+        if (s[0] != '/' && !(s.size() > 1 && s[1] == ':')) s = std::string("sdmc:/switch/RogueLeader-NX/") + s;
 #endif
         return s;
     }();

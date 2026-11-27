@@ -197,7 +197,7 @@ settings::Settings& settings::get() {
 
 // --- files ---------------------------------------------------------------------------------
 // Everything the port writes lives in its folder on the SD card (logs/, saves/, textures/).
-std::string mods::userDir() { return "sdmc:/switch/RL-NX/"; }
+std::string mods::userDir() { return "sdmc:/switch/RogueLeader-NX/"; }
 
 // --- save states ----------------------------------------------------------------------------
 // No save states on the Switch yet (docs/SWITCH_PORT.md §B: not required for the first version).

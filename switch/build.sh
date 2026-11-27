@@ -83,6 +83,8 @@ RUN=("$DKP/msys2/usr/bin/env.exe"
     -DRL_NX_GAME_PIC="${RL_NX_GAME_PIC:-}" \
     -DRL_NX_GAME_INLINE="${RL_NX_GAME_INLINE:-}" \
     -DMELEE_AURORA_SOURCE="$(cygpath -u "$PWD")/$AURORA_SRC"
+N=$(cat build-switch/build_number.txt 2>/dev/null || echo 0); N=$((N+1)); echo "$N" > build-switch/build_number.txt
+echo "#define RL_NX_BUILD_NUMBER $N" > build-switch/build_number.h
 touch switch/src/main_switch.cpp # boot.txt / stdout.log build stamp = this build
 # RL-NX: recompiled functions take their context as `Ctx& __restrict c`, so guest stores no longer force
 # every guest register to be reloaded (hardware 08:56: the game code was 60 ms of a 97 ms frame). Idempotent;
@@ -127,8 +129,11 @@ if "$NM" build-switch/RL-NX.elf | grep -qw "__malloc_av_"; then
   exit 1
 fi
 
-mkdir -p debug build-switch/sdcard/switch/RL-NX
+# RL-NX (2026-11-27): the SD folder and the NRO are RogueLeader-NX; the build number counts runs of this script and
+# is shown under the - menu (main_switch.cpp reads build-switch/build_number.h, written before the stamp touch above)
+D=build-switch/sdcard/switch/RogueLeader-NX
+mkdir -p debug "$D"
 cp build-switch/RL-NX.elf "debug/RL-NX-$(date +%H%M).elf"
-cp build-switch/RL-NX.nro build-switch/sdcard/switch/RL-NX/
-rm -f build-switch/sdcard/switch/RL-NX/initial_dksh_cache.bin build-switch/sdcard/switch/RL-NX/initial_pipeline_cache.db
-ls -la build-switch/sdcard/switch/RL-NX/RL-NX.nro
+cp build-switch/RL-NX.nro "$D/RogueLeader-NX.nro"
+rm -f "$D/RL-NX.nro" "$D/initial_dksh_cache.bin" "$D/initial_pipeline_cache.db"
+ls -la "$D/RogueLeader-NX.nro"

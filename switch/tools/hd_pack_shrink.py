@@ -20,7 +20,7 @@
 #                                        [--scale N] [--max N] [--no-bc1] [--dry-run] [--jobs N]
 # Presets: balanced = scale 4, max 1024 (default); quality = scale 4, max 2048; light = scale 2, max 512.
 # Re-running skips files whose output is newer than the input (use --force to redo all).
-# Then copy <out dir>/GSWE64 to sdmc:/switch/RL-NX/mods/hd/ (replacing the 4K pack).
+# Then copy <out dir>/GSWE64 to sdmc:/switch/RogueLeader-NX/mods/hd/ (replacing the 4K pack).
 
 import argparse
 import multiprocessing

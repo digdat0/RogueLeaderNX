@@ -29,12 +29,23 @@ void menuLoadPrefs();       // RL-NX: menu_switch.cpp - config/settings.cfg, the
 void menuApplyBootPrefs();  // RL-NX: the saved rows that are switched by a call (profiler, perf log, GPU timing)
 }
 
-#define RL_SD_ROOT "sdmc:/switch/RL-NX"
+#define RL_SD_ROOT "sdmc:/switch/RogueLeader-NX"
 #define RL_LOG_PATH RL_SD_ROOT "/logs/log.txt"
 
 // The build stamp: build.sh touches this file so the log's first line carries this build's time (an
 // old .nro on the SD card is the most common "it still crashes").
 const char rl_build_stamp[] = __DATE__ " " __TIME__;
+// RL-NX (2026-11-27): "v0.1.0 4561" for the bottom of the - menu: the project version (CMake) and build.sh's run counter.
+#if __has_include("build_number.h")
+#include "build_number.h"
+#endif
+#ifndef RL_NX_BUILD_NUMBER
+#define RL_NX_BUILD_NUMBER 0
+#endif
+#define RL_STR2(x) #x
+#define RL_STR(x) RL_STR2(x)
+extern "C" const char rl_nx_version_label[];
+extern "C" const char rl_nx_version_label[] = "v" RL_NX_VERSION " " RL_STR(RL_NX_BUILD_NUMBER);
 // RL-NX: the same stamp under the C name prof_switch.cpp reads for the profile header (a namespace-
 // scope const has internal linkage in C++, so it is exported explicitly).
 extern "C" const char rl_nx_build_stamp[];
@@ -99,6 +110,10 @@ void banner(const char* fmt, ...) {
 }  // namespace
 
 extern "C" void aurora_switch_dk_boot_screen(const char* title, float fraction, const char* detail, const char* hint);  // RL-NX: deko/device.cpp
+extern "C" void aurora_shutdown(void);  // RL-NX: the no-disc exit (same calls as relaunch_switch.cpp)
+extern "C" void aurora_switch_dk_release_all(void);
+extern "C" int kartpad_end_threads(void);
+extern "C" __attribute__((noreturn)) void kartpad_exit_to_loader(void);
 extern "C" void rlUpdaterSetNroPath(const char* path);  // RL-NX (2026-11-27): updater_switch.cpp
 extern "C" void rlUpdaterApplyPending(void);
 
@@ -120,7 +135,7 @@ int main(int argc, char** argv) {
     rlUpdaterApplyPending();
     const int logFd = open(RL_LOG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (logFd >= 0 && melee_nx_log_capture_stdio(logFd))
-        printf("RL-NX (Rogue Leader) %s, build %s\n", "0.1", rl_build_stamp);  // RL-NX: the log's first line
+        printf("RogueLeader-NX %s, build %s\n", rl_nx_version_label, rl_build_stamp);  // RL-NX: the log's first line
     else
         printf("warning: no log file at %s\n", RL_LOG_PATH);
 
@@ -169,10 +184,15 @@ int main(int argc, char** argv) {
         while (appletMainLoop()) {
             padUpdate(&pad);
             if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
-            aurora_switch_dk_boot_screen("ROGUELEADERNX", -1.0f, "NO DISC IMAGE FOUND",
+            aurora_switch_dk_boot_screen("ROGUELEADER-NX", -1.0f, "NO DISC IMAGE FOUND",
                                          "PUT YOUR ROGUE LEADER .ISO OR .RVZ IN SDMC:/SWITCH/RL-NX   PRESS + TO EXIT");
         }
-        exit(0);  // wrapped: flushes the log and ends the process, as a quit from the game does
+        // RL-NX: + did nothing with a plain exit(0) here (Aurora's threads are running). Leave as the updater's restart does:
+        // stop Aurora, give the GPU back, end the threads, then libnx returns to hbloader (the homebrew menu).
+        aurora_shutdown();
+        aurora_switch_dk_release_all();
+        if (kartpad_end_threads() == 0) kartpad_exit_to_loader();
+        exit(0);
     }
     banner("disc: %s", disc.c_str());
     if (!rt::discOpen(disc)) rt::fatal("cannot open the disc image %s", disc.c_str());

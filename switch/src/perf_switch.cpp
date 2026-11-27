@@ -81,7 +81,7 @@ double average(size_t stage) {
 // Reads perf.cfg once at startup (before Aurora creates its threads), stores every numeric value for
 // melee_nx_perf_int / melee_nx_opt, handles the named keys below, and exports the Aurora knobs.
 extern "C" void melee_nx_perf_init(void) {
-    if (FILE* file = std::fopen("sdmc:/switch/RL-NX/config/perf.cfg", "r")) {
+    if (FILE* file = std::fopen("sdmc:/switch/RogueLeader-NX/config/perf.cfg", "r")) {
         char line[128];
         while (std::fgets(line, sizeof(line), file)) {
             char key[32], value[32], extra[2];
@@ -146,10 +146,10 @@ extern "C" void melee_nx_perf_init(void) {
     setenv("AURORA_LAUNCH_WARM_HELPERS", helpers, 1);
     if (uber > 0) {
         // A previous run turned the uber-shader off after frames collapsed under it.
-        if (FILE* marker = std::fopen("sdmc:/switch/RL-NX/config/uber.tripped", "rb")) {
+        if (FILE* marker = std::fopen("sdmc:/switch/RogueLeader-NX/config/uber.tripped", "rb")) {
             std::fclose(marker);
             uber = 0;
-            pc_log_line("SWEEP uber disabled by sdmc:/switch/RL-NX/config/uber.tripped");
+            pc_log_line("SWEEP uber disabled by sdmc:/switch/RogueLeader-NX/config/uber.tripped");
         }
     }
     char uberMode[8];

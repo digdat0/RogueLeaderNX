@@ -13,7 +13,7 @@
 //    table: nothing allocates or prints while the main thread is stopped, and the sampler takes the
 //    table lock before pausing, so it never stops the main thread while that thread holds the lock.
 //
-// Reports go to sdmc:/switch/RL-NX/logs/profile-<n>.txt when the profiler is switched off and every
+// Reports go to sdmc:/switch/RogueLeader-NX/logs/profile-<n>.txt when the profiler is switched off and every
 // 30 seconds while it runs (RL-NX: was two minutes, which lost most of a short run). Incremental: every report is a new file holding only the time since the
 // previous one (header: session, part, from = seconds into the session). switch/tools/prof_report.py
 // turns a report into per-function times with the build's .elf
@@ -35,7 +35,7 @@ extern "C" bool aurora_frame_overlap(void);                           // extern/
 namespace {
 
 // Sampling rate, table sizes and the periodic report interval (30 s).
-constexpr const char* kLogDir = "sdmc:/switch/RL-NX/logs";
+constexpr const char* kLogDir = "sdmc:/switch/RogueLeader-NX/logs";
 constexpr u32 kHz = 1000;
 constexpr int kMaxTargets = 8; // main, FIFO, render, shader compiler, audio, spare
 constexpr u32 kTableSize = 1u << 15; // power of two

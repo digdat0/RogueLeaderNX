@@ -30,7 +30,7 @@ void setGpRaw(bool on);  // RL-NX (Stage 6): the - menu's GP RAW row (the worker
 void setAsyncVblank(bool on);  // RL-NX (audit 2026-11-27): the - menu's ASYNC VBLANK row (no per-vblank bridge drain)
 bool asyncVblankOn();
 void setCpLag(bool on);  // RL-NX (Stage 11): the - menu's CP LAG row (CP reads report the worker's progress)
-void setHdTextures(bool on);  // RL-NX (Stage 12): the - menu's HD TEXTURES row (sdmc:/switch/RL-NX/mods/hd)
+void setHdTextures(bool on);  // RL-NX (Stage 12): the - menu's HD TEXTURES row (sdmc:/switch/RogueLeader-NX/mods/hd)
 bool hdTexturesOn();
 void setHdLimit(bool on);     // RL-NX (Stage 12): the - menu's HD TEX 2048 row (top mips above 2048 px dropped)
 bool hdLimitOn();

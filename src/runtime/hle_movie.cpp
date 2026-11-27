@@ -253,14 +253,14 @@ bool decode(const u32 a[4], u32 wantW, bool store) {
     // Frame 30 of the check run is written out for offline comparison (logs/movie_game.bin: the guest's three
     // planes as stored; logs/movie_tj.bin: libjpeg-turbo's linear planes).
     if (s.checked == 30) {
-        if (FILE* f = fopen("sdmc:/switch/RL-NX/logs/movie_game.bin", "wb")) {
+        if (FILE* f = fopen("sdmc:/switch/RogueLeader-NX/logs/movie_game.bin", "wb")) {
             const u32 at[3] = {yA, uA, vA}, n[3] = {yN, cN, cN};
             for (int i = 0; i < 3; i++)
                 for (u32 o = 0; o < n[i]; o += 32)
                     if (const u8* p = hostPtr(at[i] + o, false)) fwrite(p, 1, 32, f);
             fclose(f);
         }
-        if (FILE* f = fopen("sdmc:/switch/RL-NX/logs/movie_tj.bin", "wb")) {
+        if (FILE* f = fopen("sdmc:/switch/RogueLeader-NX/logs/movie_tj.bin", "wb")) {
             fwrite(s.planes.data(), 1, s.planes.size(), f);
             fclose(f);
         }

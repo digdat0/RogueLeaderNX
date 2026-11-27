@@ -376,7 +376,7 @@ void fmFrame() {
                         s_fmSite[top[i]].rd + s_fmSite[top[i]].wr);
     logf("fastmem", "%s", line);
     lastFaults = s_fmFaults;
-    if (FILE* f = fopen("sdmc:/switch/RL-NX/logs/fmcensus.txt", "w")) {
+    if (FILE* f = fopen("sdmc:/switch/RogueLeader-NX/logs/fmcensus.txt", "w")) {
         fprintf(f, "# RL-NX fastmem faults: faulting pc + 4 (as a return address), 0, 0, reads, writes (cumulative)\n");
         fprintf(f, "anchor %llx\nlost %u\n", (unsigned long long)reinterpret_cast<uintptr_t>(&rl_nx_prof_anchor), s_fmLost);
         for (u32 i = 0; i < kFmSites; i++)
@@ -396,7 +396,7 @@ void vmCensusFrame() {
     static u32 frames = 0;
     if (!g_vmCensus || ++frames < 1800) return;
     frames = 0;
-    FILE* f = fopen("sdmc:/switch/RL-NX/logs/vmcensus.txt", "w");
+    FILE* f = fopen("sdmc:/switch/RogueLeader-NX/logs/vmcensus.txt", "w");
     if (!f) return;
     fprintf(f, "# RL-NX VM census: return address, VM reads, VM writes, other slow reads, other slow writes (cumulative since VM CENSUS went on)\n");  // RL-NX (Stage 11): + other
     fprintf(f, "anchor %llx\nlost %u\n", (unsigned long long)reinterpret_cast<uintptr_t>(&rl_nx_prof_anchor), s_censusLost);

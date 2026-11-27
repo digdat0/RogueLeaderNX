@@ -32,7 +32,7 @@ target_include_directories(melee_deko PUBLIC "${_dk}" PRIVATE
   "${MELEE_DAWN_SOURCE}" "${MELEE_DAWN_BUILD}/gen" "${_dk}/aurora"
   "$ENV{DEVKITPRO}/portlibs/switch/include")
 target_compile_definitions(melee_deko PRIVATE
-  COS_SWITCH_NRO_DIR="/switch/RL-NX" COS_SWITCH_DATA_DIR="sdmc:/switch/RL-NX")
+  COS_SWITCH_NRO_DIR="/switch/RogueLeader-NX" COS_SWITCH_DATA_DIR="sdmc:/switch/RogueLeader-NX")
 
 # Diagnostics for the NVIDIA channel timeout (2348-0006) KartPadNX saw at scene loads. All of it is
 # inert until perf.cfg `gpu_steady_v9 1` (backend_commands.cpp), so a console that hits the timeout
