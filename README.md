@@ -36,7 +36,7 @@ a little longer than later starts. The game creates its other folders itself:
 
 | Folder | What is in it |
 |---|---|
-| `config/` | `menu.cfg` (the in-game menu's saved settings), Aurora's `input.json`, an optional `boot.cfg` |
+| `config/` | `settings.cfg` (the in-game menu's saved settings and any other option), Aurora's `input.json` |
 | `cache/` | shader and pipeline caches, downloaded updates |
 | `logs/` | `log.txt` for the last run (see *Reporting a problem*) |
 | `saves/` | the memory card image |
@@ -65,9 +65,9 @@ game sees no controller input.
 | UPDATE | looks for a newer release on GitHub and installs it |
 
 The **Debug** tab (performance and diagnostic switches) is hidden by default. Add the line
-`R2_DEBUG_MENU=1` to `sdmc:/switch/RL-NX/config/boot.cfg` to show it. Normal play needs no `boot.cfg`.
+`R2_DEBUG_MENU=1` to `sdmc:/switch/RL-NX/config/settings.cfg` to show it (the game creates the file when you first switch a row; any other line in it is kept). Normal play needs no edits.
 
-Settings are remembered between runs. Delete `config/menu.cfg` to go back to the defaults.
+Settings are remembered between runs. Delete `config/settings.cfg` to go back to the defaults.
 
 ## HD textures
 

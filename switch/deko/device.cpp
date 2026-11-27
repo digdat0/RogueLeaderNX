@@ -1744,7 +1744,7 @@ extern "C" void aurora_switch_dk_init(uint32_t gxConfigVersion) {
     // The title names the game (upper case: the boot font has no lower-case glyphs). 20 characters at
     // scale 6 is about 485 px wide, inside the 720p window.
     // RL-NX: was "STARFOX ADVENTURES LOADING", left over from the SFA-NX layer this came from.
-    aurora_switch_dk_boot_screen("ROGUE LEADER LOADING", -1.0f, nullptr, nullptr);
+    aurora_switch_dk_boot_screen("ROGUELEADERNX LOADING", -1.0f, nullptr, nullptr);
     dklog("boot screen submitted using embedded native shaders");
     g_heapAfterSetup = heap_never_used_mib();
     dklog("set-up cost: %zu MiB of heap (never used: %zu MiB before, %zu MiB after), %.0f ms",

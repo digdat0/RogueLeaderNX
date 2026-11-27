@@ -25,7 +25,7 @@
 extern "C" void melee_nx_perf_init(void);
 extern "C" void rlProfStartFor(int seconds);
 namespace rt::gfx {
-void menuLoadPrefs();       // RL-NX: menu_switch.cpp - config/menu.cfg, the - menu's saved rows
+void menuLoadPrefs();       // RL-NX: menu_switch.cpp - config/settings.cfg, the - menu's saved rows
 void menuApplyBootPrefs();  // RL-NX: the saved rows that are switched by a call (profiler, perf log, GPU timing)
 }
 
@@ -50,12 +50,13 @@ int s_screenFd = -1;
 
 // RL-NX: options. Red Two's switches are environment variables (R2_INPUT, R2_NO_XFB, R2_GX_DUMP,
 // R2_UBER, ...) and a console has no shell to set them from, so the same names are read from
-// boot.cfg in the port's folder: one KEY=VALUE per line, # starts a comment. Loaded before anything
+// settings.cfg in the port's folder: one KEY=VALUE per line, # starts a comment. Loaded before anything
 // reads them, and every line that is set is logged, so a log always says how a build was run.
 void loadOptions() {
-    // RL-NX: config/boot.cfg since the SD layout change (2026-11-26). Optional and for diagnostics only: normal
-    // play needs no file (the zfreeze guard is on by default and the - menu rows are saved in config/menu.cfg).
-    FILE* f = fopen(RL_SD_ROOT "/config/boot.cfg", "r");
+    // RL-NX (2026-11-27): config/settings.cfg is the one options file (boot.cfg and menu.cfg are gone). The - menu rows
+    // are written into it by the game; any other R2_* line (R2_DEBUG_MENU=1, diagnostics) is kept as written.
+    // Optional: with no file everything starts at its default.
+    FILE* f = fopen(RL_SD_ROOT "/config/settings.cfg", "r");
     if (!f) return;
     char line[512];
     while (fgets(line, sizeof line, f)) {
@@ -113,7 +114,7 @@ int main(int argc, char** argv) {
     // where the boot's own log lines go: a console screen cannot be attached to a bug report).
     mkdir(RL_SD_ROOT, 0777);
     mkdir(RL_SD_ROOT "/logs", 0777);
-    mkdir(RL_SD_ROOT "/config", 0777);        // RL-NX: boot.cfg, menu.cfg, Aurora's input.json
+    mkdir(RL_SD_ROOT "/config", 0777);        // RL-NX: settings.cfg, Aurora's input.json
     mkdir(RL_SD_ROOT "/cache", 0777);         // RL-NX: deko/ shaders, aurora/ caches, update.nro
     mkdir(RL_SD_ROOT "/cache/aurora", 0777);  // Aurora's pipeline cache (dawn_cache.db) and bindings
     // RL-NX (2026-11-27): the in-game updater: where this NRO lives (argv[0]), and the leftovers of the last update
@@ -133,7 +134,7 @@ int main(int argc, char** argv) {
         banner("launch mode: title takeover (ok)");
 
     loadOptions();  // before anything reads an R2_* switch
-    rt::gfx::menuLoadPrefs();  // RL-NX: config/menu.cfg, the - menu's saved rows (over boot.cfg)
+    rt::gfx::menuLoadPrefs();  // RL-NX: the - menu's saved rows from config/settings.cfg (same file loadOptions just read)
     // RL-NX: R2_ICOUNT=1 (guest instruction metering) and R2_STATE_HASH=<frame>[,...] (the
     // differential harness) are read here, before the guest boots. Both are inert otherwise.
     rt::meterInit();
@@ -150,7 +151,7 @@ int main(int argc, char** argv) {
     // them: Aurora's placement code is Linux/Windows only, so the render worker started on the
     // process's default core, which is the game thread's (to be confirmed by the THREAD log lines).
     melee_nx_perf_init();
-    // RL-NX: boot.cfg R2_PROFILE=<seconds> samples the game thread (and placed Aurora threads) at
+    // RL-NX: settings.cfg R2_PROFILE=<seconds> samples the game thread (and placed Aurora threads) at
     // 1 kHz from here, then writes logs/profile-NNN.txt (switch/tools/prof_report.py reads it).
     if (const char* prof = getenv("R2_PROFILE"); prof && *prof) rlProfStartFor(atoi(prof));
     rt::gfx::menuApplyBootPrefs();  // RL-NX: saved PROFILER / PERF LOG / GPU TIMING rows

@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>  // RL-NX: savePrefs keeps the file's other lines
 #include <sys/stat.h>  // RL-NX: mkdir for config/
 
 #include "hotkeys.h"  // RL-NX: the - menu's presses (SDL path)
@@ -98,7 +99,7 @@ extern "C" void rlnxClockInit(void);  // RL-NX: GPU 460.8 MHz handheld profile a
 namespace rt::gfx {
 
 // RL-NX (2026-11-27): two tabs. Game (FRAME RATE, HD TEXTURES) always; Debug (everything else) only with R2_DEBUG_MENU=1
-// (boot.cfg or menu.cfg), as SFA-NX's debug_menu=1. HD TEX 2048 is gone (the 2048 limit keeps its default, R2_HD_LIMIT=0 in boot.cfg lifts it).
+// (config/settings.cfg), as SFA-NX's debug_menu=1. HD TEX 2048 is gone (the 2048 limit keeps its default, R2_HD_LIMIT=0 in settings.cfg lifts it).
 enum Row { kFrameRate = 0, kStatsLog, kProfiler, kPerfLog, kGpuTiming, kGxThread, kGpThread, kAudioThread, kFastPipe, kGpRaw, kFrameOverlap, kNativeMtx, kVmCensus, kNativeMovie, kCpLag, kHdTextures, kAsyncVblank, kDspFast, kInvertFlight, kRumble, kGameLog, kRowCount, kUpdate = kRowCount };  // kUpdate is an action row (rlUpdater*), not a switch: no s_on / pref
 constexpr int kGameRows[] = {kFrameRate, kInvertFlight, kRumble, kHdTextures, kGameLog, kUpdate};
 constexpr int kDebugRows[] = {kStatsLog, kProfiler, kPerfLog, kGpuTiming, kGxThread, kGpThread, kAudioThread, kFastPipe, kGpRaw,
@@ -146,28 +147,46 @@ void syncRows() {
     s_on[kGameLog].store(rl_log_extra_on != 0, std::memory_order_relaxed);
 }
 
-// RL-NX: saved rows. Every switch of a row writes all rows to config/menu.cfg as the boot.cfg names that set
-// their start state (R2_FPS=1 ...), and the next boot reads that file right after boot.cfg (menuLoadPrefs, from
-// main_switch.cpp), so what the panel showed when the game closed is how it starts. The file wins over boot.cfg;
-// delete it to go back to boot.cfg and the defaults. PROFILER has no boot.cfg form without a time limit
+// RL-NX: saved rows. Every switch of a row writes all rows into config/settings.cfg (the file also holds any other R2_* lines, kept as written),
+// under the names that set their start state (R2_FPS=1 ...); the next boot reads it (loadOptions, then menuLoadPrefs, from
+// main_switch.cpp), so what the panel showed when the game closed is how it starts.
+// Delete it to go back to the defaults. PROFILER has no plain form without a time limit
 // (R2_PROFILE=<seconds>), so it is saved as R2_PROFILER and switched on from boot by menuApplyBootPrefs.
 constexpr const char* kPrefKeys[kRowCount] = {"R2_FPS", "R2_STATS", "R2_PROFILER", "R2_PERFLOG", "R2_GPU_TIMING",
                                               "R2_BRIDGE_THREAD", "R2_GP_THREAD", "R2_AUDIO_THREAD", "R2_FAST_PIPE", "R2_GP_RAW", "R2_FRAME_OVERLAP", "R2_NATIVE_MTX", "R2_VM_CENSUS", "R2_NATIVE_MOVIE", "R2_CP_LAG", "R2_HD_TEXTURES", "R2_ASYNC_VBLANK", "R2_DSP_FAST", "R2_INVERT_FLIGHT", "R2_RUMBLE", "R2_GAME_LOG"};  // RL-NX (2026-11-27): R2_HD_LIMIT row removed (an old menu.cfg line is ignored)
 constexpr const char* kPrefDir = "sdmc:/switch/RL-NX/config";
-constexpr const char* kPrefPath = "sdmc:/switch/RL-NX/config/menu.cfg";
-constexpr const char* kPrefTmp = "sdmc:/switch/RL-NX/config/menu.cfg.tmp";
+constexpr const char* kPrefPath = "sdmc:/switch/RL-NX/config/settings.cfg";  // RL-NX (2026-11-27): was menu.cfg; boot.cfg is gone, this is the only options file
+constexpr const char* kPrefTmp = "sdmc:/switch/RL-NX/config/settings.cfg.tmp";
 int s_bootPref[kRowCount];  // -1: not in the file
 
 void savePrefs() {
     mkdir(kPrefDir, 0777);
+    // RL-NX (2026-11-27): every line of the file that is not a menu row (R2_DEBUG_MENU, diagnostics, comments the user
+    // wrote) is read first and written back unchanged; the rows follow, so switching a row never loses a hand edit.
+    std::string keep;
+    if (FILE* in = fopen(kPrefPath, "r")) {
+        char line[512];
+        while (fgets(line, sizeof line, in)) {
+            if (strncmp(line, "# RL-NX - settings", 18) == 0) continue;  // our header, rewritten below
+            const char* eq = strchr(line, '=');
+            bool row = false;
+            if (eq && line[0] != '#')
+                for (int i = 0; i < kRowCount && !row; i++) row = strlen(kPrefKeys[i]) == size_t(eq - line) && strncmp(line, kPrefKeys[i], eq - line) == 0;
+            if (!row) keep += line;
+        }
+        fclose(in);
+    }
     FILE* f = fopen(kPrefTmp, "w");
     if (!f) {
         rt::logf("menu", "perf: could not write %s", kPrefTmp);
         return;
     }
-    fprintf(f, "# RL-NX - menu rows, written by the game whenever a row is switched. Delete to use config/boot.cfg and the defaults.\n");
+    fprintf(f, "# RL-NX - settings. The - menu rows are written by the game whenever one is switched; other R2_* lines are kept as written.\n");
     for (int i = 0; i < kRowCount; i++) fprintf(f, "%s=%d\n", kPrefKeys[i], s_on[i].load(std::memory_order_relaxed) ? 1 : 0);
-    if (s_debug.load(std::memory_order_relaxed)) fprintf(f, "R2_DEBUG_MENU=1\n");  // RL-NX: keeps the Debug tab shown
+    if (!keep.empty()) {
+        fputs(keep.c_str(), f);
+        if (keep.back() != '\n') fputc('\n', f);
+    }
     fclose(f);
     remove(kPrefPath);  // Horizon's rename does not replace an existing file
     if (rename(kPrefTmp, kPrefPath) != 0) rt::logf("menu", "perf: could not save %s", kPrefPath);
@@ -201,7 +220,7 @@ void apply(int row, bool on) {
     default: return;
     }
     s_on[row].store(on, std::memory_order_relaxed);
-    savePrefs();  // RL-NX: remembered for the next boot (config/menu.cfg)
+    savePrefs();  // RL-NX: remembered for the next boot (config/settings.cfg)
     static const char* const kLogNames[kRowCount] = {"frame rate", "stats lines", "profiler", "perf log", "gpu timing", "gx thread", "gp thread", "audio thread", "fast pipe", "gp raw", "frame overlap", "native mtx", "vm census", "native movie", "cp lag", "hd textures", "async vblank", "dsp fast", "invert flight", "rumble", "game logging"};  // RL-NX (Stage 12)  // RL-NX (Stage 11)  // RL-NX (Stage 10)  // RL-NX (Stage 9)  // RL-NX (Stage 7)  // RL-NX (Stage 6); cpu boost removed
     rt::logf("menu", "perf: %s %s", kLogNames[row], on ? "on" : "off");
 }
@@ -266,7 +285,7 @@ void menuDraw() {
 // (gx_bridge.h) input.cpp and hotkeys.cpp ask this: while the panel is open the game must not see the pad
 bool menuOpen() { return s_open.load(std::memory_order_relaxed); }
 
-// RL-NX: config/menu.cfg (see savePrefs). At boot, right after boot.cfg: each saved row goes into the environment
+// RL-NX: config/settings.cfg (see savePrefs). At boot, right after boot.cfg: each saved row goes into the environment
 // under the name that sets its start state, so every switch starts where the panel left it.
 void menuLoadPrefs() {
     for (int& v : s_bootPref) v = -1;
@@ -288,18 +307,18 @@ void menuLoadPrefs() {
         }
     }
     fclose(f);
-    rt::logf("opts", "menu.cfg (saved - menu rows, over boot.cfg): %s", used);
+    rt::logf("opts", "settings.cfg (saved - menu rows): %s", used);
 }
 
 // RL-NX: the rows that are switched by a call rather than read from the environment, once their switches exist
 // (main_switch.cpp, after the profiler's init).
 void menuApplyBootPrefs() {
-    // a boot.cfg R2_PROFILE=<seconds> run is asked for on purpose: a saved OFF does not cancel it
+    // a settings.cfg R2_PROFILE=<seconds> run is asked for on purpose: a saved OFF does not cancel it
     const char* timed = getenv("R2_PROFILE");
     if (s_bootPref[kProfiler] == 1 || (s_bootPref[kProfiler] == 0 && !(timed && *timed))) rlProfSetEnabled(s_bootPref[kProfiler]);
     if (s_bootPref[kPerfLog] >= 0) rlPmSetEnabled(s_bootPref[kPerfLog]);
     if (s_bootPref[kGpuTiming] >= 0) rlnxGpuTimingSet(s_bootPref[kGpuTiming]);
-    // RL-NX (Stage 7): FRAME OVERLAP is on unless menu.cfg or boot.cfg says R2_FRAME_OVERLAP=0 (menuLoadPrefs set the env)
+    // RL-NX (Stage 7): FRAME OVERLAP is on unless settings.cfg says R2_FRAME_OVERLAP=0 (menuLoadPrefs set the env)
     if (const char* e = getenv("R2_FRAME_OVERLAP"); e && *e) aurora_set_frame_overlap(*e != '0');
     rt::logf("opts", "frame overlap: %s (R2_FRAME_OVERLAP / - menu FRAME OVERLAP)", aurora_frame_overlap() ? "on" : "off");
     // RL-NX (Stage 9): NATIVE MTX is on unless R2_NATIVE_MTX=0; VM CENSUS is off unless R2_VM_CENSUS=1
@@ -321,7 +340,7 @@ void menuApplyBootPrefs() {
 // Returns whether it recorded anything (the caller then restores the frame's viewport). The 3x5 font is 4x6
 // pixels per cell at scale 1. RL-NX (2026-11-27): the panel is centred on the screen with a double border, a
 // title (and the Game / Debug tabs when Debug is shown) above, the rows, and a footer naming the buttons.
-// The scale follows the height (3 at 720p, 4 at 1080p); every text line is one draw_text, well inside the
+// The scale is fitted to the screen (4-5 at 720p); every text line is one draw_text, well inside the
 // text pass's 768-cell budget. The panel's fills are opaque so the layered rectangles do not tint each other.
 extern "C" bool rl_nx_menu_draw() {
     using namespace rt::gfx;
@@ -344,16 +363,22 @@ extern "C" bool rl_nx_menu_draw() {
     int sw = 0, sh = 0;
     swdk::surface_size(&sw, &sh);
     if (sw <= 0 || sh <= 0) return false;
-    int scale = sh / 240;
-    if (scale < 2) scale = 2;
-    if (scale > 4) scale = 4;
+    // RL-NX (2026-11-27): larger panel and text: the biggest scale (3..6) at which the tallest tab (Debug's rows when it is
+    // shown, else Game's) takes at most 88% of the height and 92% of the width; 4 at 720p with Debug, 5 without.
+    const int nMax = debug ? (kDebugN > kGameN ? kDebugN : kGameN) : kGameN;
+    const auto panelH = [&](int sc, int rows) {
+        const int ins = 2 * sc + 2 + sc + 2 + 5 * sc;
+        return 2 * ins + (6 * sc + 4) * (1 + (debug ? 1 : 0) + rows) + 2 * (2 * sc) + (debug ? 2 : 1) * (6 * (sc - 1) + 7);
+    };
+    int scale = 6;
+    while (scale > 3 && (panelH(scale, nMax) > sh * 88 / 100 || (30 * 4 * scale + 2 * (2 * scale + 2 + scale + 2 + 5 * scale)) > sw * 92 / 100)) scale--;
     const int fs = scale - 1;                   // the footer's scale
-    const int cw = 4 * scale, lineH = 6 * scale + 8;
+    const int cw = 4 * scale, lineH = 6 * scale + 4;
     const int rule = 2 * scale;                 // a divider line's gap
     const int border = 2 * scale, frame = scale;  // the gold border, then the thin inner frame
     const int pad = 5 * scale;
     const int inset = border + 2 + frame + 2 + pad;  // panel edge to content
-    const int contentW = 24 * cw;
+    const int contentW = 30 * cw;
     const int footH = 6 * fs + 7;
     const int nFoot = debug ? 2 : 1;
     const int W = contentW + 2 * inset;
@@ -391,7 +416,7 @@ extern "C" bool rl_nx_menu_draw() {
         const bool here = i == sel;
         const int r = rows[i];
         const int rowY = y + i * lineH;
-        if (here) swdk::draw_rect(cx - pad / 2, rowY - 4, contentW + pad, lineH, kBgRow);
+        if (here) swdk::draw_rect(cx - pad / 2, rowY - 2, contentW + pad, lineH, kBgRow);
         char buf[40];
         snprintf(buf, sizeof buf, "%c %s", here ? '>' : ' ', r == kUpdate ? "UPDATE" : kNames[r]);
         const char* lines[1] = {buf};
@@ -418,7 +443,7 @@ extern "C" bool rl_nx_menu_draw() {
         }
         const bool on = s_on[r].load(std::memory_order_relaxed);
         const char* val[1] = {on ? "ON" : "OFF"};
-        swdk::draw_text(cx + 19 * cw, rowY, scale, val, 1, on ? kGreen : kDim, here ? kBgRow : kBg);
+        swdk::draw_text(cx + 21 * cw, rowY, scale, val, 1, on ? kGreen : kDim, here ? kBgRow : kBg);
     }
     y += n * lineH;
     swdk::draw_rect(cx, y, contentW, scale, kLine);
