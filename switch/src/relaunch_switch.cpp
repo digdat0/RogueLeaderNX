@@ -11,6 +11,7 @@
 
 extern "C" {
 void pc_log_line(const char* fmt, ...);
+void melee_nx_log_flush(void);               // log_switch.cpp: wait until the log is on the card
 int rlRelaunchPending(void);                  // updater_switch.cpp: the NRO to start next was set
 void rlUpdaterReleaseNet(void);               // updater_switch.cpp: curl + sockets
 void aurora_shutdown(void);                   // Aurora: ends its threads, SDL and the renderer's frame objects
@@ -25,18 +26,21 @@ namespace input { void inputShutdown(); }     // input.cpp: the joystick thread
 namespace audio { void shutdown(); }          // audio_switch.cpp: the audio-out thread and audout
 }  // namespace rt
 
+// RL-NX: flushed step marker, so a freeze in the teardown names its step in the log
+#define STEP(m) do { pc_log_line("[rl-nx] leaving: " m); melee_nx_log_flush(); } while (0)
 extern "C" __attribute__((noreturn)) void rlnxRelaunchTeardown(void) {
     const bool relaunch = rlRelaunchPending() != 0;
     pc_log_line("[rl-nx] leaving: %s", relaunch ? "relaunching through hbloader" : "ending the process");
-    rt::input::inputShutdown();   // before SDL goes: it calls SDL_UpdateJoysticks
-    rt::eventsShutdown();
-    rt::audio::shutdown();
-    aurora_shutdown();
+    STEP("input"); rt::input::inputShutdown();   // before SDL goes: it calls SDL_UpdateJoysticks
+    STEP("events"); rt::eventsShutdown();
+    STEP("audio"); rt::audio::shutdown();
+    STEP("aurora"); aurora_shutdown();
+    STEP("aurora ended");
     if (relaunch && rlProfThreadsStarted() == 0) {
         if (kartpad_end_threads() == 0) {
-            aurora_switch_dk_release_all();  // memory still locked to the GPU would stop hbloader mapping the next NRO
-            rlUpdaterReleaseNet();           // the updater's bsd session and transfer memory
-            kartpad_exit_to_loader();        // flushes, gives the fast-mem window back, libnx _exit -> hbloader
+            STEP("gpu release"); aurora_switch_dk_release_all();  // memory still locked to the GPU would stop hbloader mapping the next NRO
+            STEP("net release"); rlUpdaterReleaseNet();           // the updater's bsd session and transfer memory
+            STEP("exit to loader"); kartpad_exit_to_loader();        // flushes, gives the fast-mem window back, libnx _exit -> hbloader
         }
         pc_log_line("[rl-nx] leaving: threads still running, plain exit (start RL-NX again to use the update)");
     } else if (relaunch) {

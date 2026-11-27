@@ -38,6 +38,7 @@
 #include <mutex>
 #include <pthread.h>
 #if defined(__SWITCH__)
+extern "C" void melee_nx_log_flush(void);  // RL-NX: log_switch.cpp
 extern "C" int rlnxRelaunchRequested(void);   // RL-NX (2026-11-27): updater_switch.cpp
 extern "C" void rlnxRelaunchTeardown(void);  // relaunch_switch.cpp, does not return
 #endif
@@ -611,7 +612,11 @@ void bridgeStartWorker() {
 // Game thread. After this every GX command runs on the calling thread.
 void bridgeShutdown() {
     if (!s_workerUp) return;
+    // RL-NX (2026-11-27): the updater's restart froze here or after (log ended at "updater: relaunching"): each step is flushed
+    // to the log so the next freeze names where.
+    logf("gfx", "relaunch: draining the bridge worker"); melee_nx_log_flush();
     bridgeDrain(RLPM_DRAIN_STATE);
+    logf("gfx", "relaunch: drained, stopping the worker"); melee_nx_log_flush();
     s_workerStop.store(true, std::memory_order_release);
     { std::lock_guard<std::mutex> lk(s_ringMx); }
     s_workCv.notify_all();
@@ -772,6 +777,7 @@ void ensureFrame() {
     // open, end the threads and return to hbloader (relaunch_switch.cpp). Never returns.
     {
         if (rlnxRelaunchRequested()) {
+            logf("gfx", "relaunch: requested, leaving at a frame boundary"); melee_nx_log_flush();
             bridgeShutdown();
             rlnxRelaunchTeardown();
         }
