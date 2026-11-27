@@ -1,18 +1,16 @@
-# RL-NX: Rogue Leader for Nintendo Switch
+# RogueLeaderNX: Star Wars Rogue Squadron II: Rogue Leader for Nintendo Switch
 
 Star Wars Rogue Squadron II: Rogue Leader (GameCube, USA, `GSWE64` revision 0) running natively on a
 Nintendo Switch as a homebrew `.nro`.
 
 It is a Switch port of [Red Two](https://github.com/gminustwo/red_two) by gminustwo, a static
-recompilation of the game: the game's own PowerPC code is translated to C++ ahead of time and runs on a
-runtime that stands in for the GameCube's hardware. Graphics go through
-[Aurora](https://github.com/encounter/aurora) onto deko3d (the Switch's native GPU API); the audio DSP
-is emulated in software. **No game data is included.** You need your own disc image of the USA release.
+recompilation of the game. 
+
+This repo and NRO do not include any Nintendo assets. You need your own legally obtained copy of Star Wars Rogue Squadron II: Rogue Leader, dumped to an .iso file or compressed to an .rvz file with Dolphin. We do not condone piracy and will not respond to requests for game image files!
 
 > Status: playable on hardware in handheld mode at 720p. Frame rate depends on the level: menus and
-> light scenes are at or near 60 fps, the busiest levels run well below it. Speed is the open work; the
-> full log of what was done, what was measured and what is left is [`README.PORT.md`](README.PORT.md).
-> Docked output (900p / 1080p) exists but is less tested.
+> light scenes are at or near 60 fps, the busiest levels run well below it. Speed is the open work;
+> running overlocked HIGHLY recommended for optimal play. Shader loading on new levels will be slow at first.
 
 ## What you need
 
@@ -63,9 +61,6 @@ game sees no controller input.
 | HD TEXTURES | uses the HD texture pack, if one is installed (below) |
 | GAME LOGGING | adds detail to the log for bug reports (off by default) |
 | UPDATE | looks for a newer release on GitHub and installs it |
-
-The **Debug** tab (performance and diagnostic switches) is hidden by default. Add the line
-`R2_DEBUG_MENU=1` to `sdmc:/switch/RogueLeader-NX/config/settings.cfg` to show it (the game creates the file when you first switch a row; any other line in it is kept). Normal play needs no edits.
 
 Settings are remembered between runs. Delete `config/settings.cfg` to go back to the defaults.
 
