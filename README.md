@@ -121,22 +121,14 @@ RL_NX_DEKO=1 bash switch/build.sh 8     # -> build-switch/RogueLeader-NX.nro (de
 `switch/README.md` covers the toolchain and a black-screen checklist, `AGENTS.md` is the working brief
 (build, test and measurement recipes), and `README.PORT.md` is the full port log.
 
-## How it works
-
-`src/recompiler` finds the game's functions in `main.dol` and writes them out as C++. `src/runtime` is the
-GameCube's hardware at register level (CPU state and MMU, threads on host fibers, video, disc, audio DSP,
-ARAM, memory card, controllers). GX commands go to Aurora, which `switch/deko` renders with deko3d and
-`switch/uam` compiles shaders for the Switch's GPU. The Switch layer (`switch/src`) holds the SD card
-layout, logging, audio output, the menu and the updater.
-
 ## Credits
 
-- **Red Two** by gminustwo, the static recompilation this port is built on.
-- **Aurora** by encounter, the GX renderer.
-- **General_Han_Solo**, the HD texture pack (see above).
-- **davy** on SteamGridDB, the Rogue Leader icon art (https://www.steamgriddb.com/grid/544663).
-- Switch homebrew groundwork from KartPadNX, Melee-NX and SwitchWaker (notices in `switch/licenses/`).
-- devkitPro, libnx, deko3d, uam and the Switch homebrew community.
+- **Red Two** by [gminustwo](https://github.com/gminustwo/red_two), the static recompilation this port is built on.
+- **Aurora** by [encounter](https://github.com/encounter/aurora), the GX renderer.
+- **General_Han_Solo**, the HD texture pack ([down-sampled Switch version](https://mega.nz/file/IMdn2JQC#6VKreFPqE9n9Oyxu58Kpo3mcaDSFdwHkkxvephdvlzg), see above).
+- **davy** on SteamGridDB, the [Rogue Leader icon art](https://www.steamgriddb.com/grid/544663).
+- Switch homebrew groundwork from [KartPadNX](https://github.com/KawaiiBunga/KartPadNX), [Melee-NX](https://github.com/KawaiiBunga/Melee-NX) and [SwitchWaker](https://github.com/centollOS/SwitchWaker) (notices in `switch/licenses/`).
+- [devkitPro](https://devkitpro.org/), [libnx](https://github.com/switchbrew/libnx), [deko3d](https://github.com/devkitPro/deko3d), [uam](https://github.com/devkitPro/uam) and the Switch homebrew community.
 
 The port was made by digdat0. The previous README for upstream Red Two on PC is kept in
 [`docs/README.RedTwoPC.md`](docs/README.RedTwoPC.md).

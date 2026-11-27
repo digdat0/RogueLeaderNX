@@ -5,7 +5,7 @@
 # Dawn Null backend with no picture. The deko3d renderer is then switched on with -DRL_NX_DEKO=ON,
 # which needs switch/deko ported to this Aurora's gfx::present/window seams (see §D.3).
 cmake_minimum_required(VERSION 3.25)
-project(rl-nx LANGUAGES C CXX ASM VERSION 0.1.0)
+project(rl-nx LANGUAGES C CXX ASM VERSION 0.1.1)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
