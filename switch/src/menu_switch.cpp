@@ -403,7 +403,7 @@ extern "C" bool rl_nx_menu_draw() {
         const char* lines[1] = {t};
         swdk::draw_text(x0 + (W - w) / 2, yy, sc, lines, 1, fg, bg);
     };
-    centred(debug ? "RL-NX DEBUG OPTIONS" : "RL-NX OPTIONS", scale, y, kGold, kBg);
+    centred(debug ? "ROGUELEADER-NX DEBUG OPTIONS" : "ROGUELEADER-NX OPTIONS", scale, y, kGold, kBg);
     y += lineH;
     if (debug) {
         const char* g = " GAME ";
