@@ -788,7 +788,7 @@ void ensureFrame() {
     // RL-NX (2026-11-27): the updater asked to leave (installed an update, or a restart): at a frame boundary, with no frame
     // open, end the threads and return to hbloader (relaunch_switch.cpp). Never returns.
     {
-        if (rlnxRelaunchRequested()) {
+        if (!onWorker() && rlnxRelaunchRequested()) {  // RL-NX: never from the GX worker (it completes frames, so it reaches here too, and would wait for itself)
             logf("gfx", "relaunch: requested, leaving at a frame boundary"); melee_nx_log_flush();
             bridgeShutdown();
             rlnxRelaunchTeardown();
@@ -3778,6 +3778,15 @@ void vblank() {
 #endif
     const bool lite = s_asyncVblank && s_workerUp && s_async.load(std::memory_order_relaxed) && !pending && !menuOpen();
     if (!lite) bridgeDrain(RLPM_DRAIN_VBLANK);
+#if defined(__SWITCH__)
+    // RL-NX (2026-11-27): the updater's restart, on the game thread at the vblank (the only thread that may end the GX worker;
+    // ensureFrame's copy of this check is skipped on the worker, which also reaches it). Never returns.
+    if (rlnxRelaunchRequested()) {
+        logf("gfx", "relaunch: requested at the vblank"); melee_nx_log_flush();
+        bridgeShutdown();
+        rlnxRelaunchTeardown();
+    }
+#endif
     bridgeApplyWanted();
     scriptedResize();
     {
