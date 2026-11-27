@@ -354,7 +354,9 @@ std::mutex s_ringMx;
 std::condition_variable s_workCv, s_doneCv;
 pthread_t s_worker;
 bool s_workerUp = false;
-std::atomic<bool> s_workerStop{false}, s_workerDone{false};  // RL-NX: s_workerDone set as workerMain returns  // RL-NX (2026-11-27): bridgeShutdown
+std::atomic<bool> s_workerStop{false}, s_workerDone{false};
+std::atomic<int> s_workerStage{0};  // RL-NX: 1 idle/spinning, 2 asleep, 3 in a command (logged if the worker does not end)
+std::atomic<u32> s_workerLastLen{0};  // RL-NX: s_workerDone set as workerMain returns  // RL-NX (2026-11-27): bridgeShutdown
 bool s_peLazy = false;  // a token without an interrupt was queued: drain before the game touches PE
 // RL-NX (9.55): batched publish. ringPush used to publish every command with a seq_cst store and a seq_cst load
 // of s_workerSleeping - two full barriers per GX command, ~30k commands a frame on the one thread the port is
@@ -507,6 +509,7 @@ void* workerMain(void*) {
     u64 r = s_ringRd.load(std::memory_order_relaxed);
     for (;;) {
         u64 w = s_ringWr.load(std::memory_order_acquire);
+        s_workerStage.store(r == w ? 1 : 3, std::memory_order_relaxed);
         if (r == w) {
             for (int i = 0; i < 20000 && r == w; i++) {  // tens of us: the next command is usually close
                 cpuRelax();
@@ -516,6 +519,7 @@ void* workerMain(void*) {
                 if (s_workerStop.load(std::memory_order_acquire)) { s_workerDone.store(true, std::memory_order_release); return nullptr; }  // RL-NX: bridgeShutdown
                 std::unique_lock<std::mutex> lk(s_ringMx);
                 s_workerSleeping.store(true, std::memory_order_seq_cst);
+                s_workerStage.store(2, std::memory_order_relaxed);
                 if (s_ringWr.load(std::memory_order_seq_cst) == r) s_workCv.wait_for(lk, std::chrono::milliseconds(100));
                 s_workerSleeping.store(false, std::memory_order_seq_cst);
                 continue;
@@ -529,6 +533,7 @@ void* workerMain(void*) {
                 r += kRingBytes - pos;
                 continue;
             }
+            s_workerLastLen.store(len, std::memory_order_relaxed);
             // RL-NX (9.57): GP thread records (raw CP bytes, partial-command drop)
             if (len == kResetMark) {
                 gxGpParse(nullptr, 0);
@@ -625,7 +630,9 @@ void bridgeShutdown() {
     // worker to say it is done (2 s at most) and leave the join to kartpad_end_threads, which reaps finished threads and
     // reports one that never ends (plain exit then, instead of a frozen screen).
     for (int i = 0; i < 2000 && !s_workerDone.load(std::memory_order_acquire); i++) usleep(1000);
-    logf("gfx", "relaunch: worker %s", s_workerDone.load() ? "returned" : "did not return in 2 s"); melee_nx_log_flush();
+    logf("gfx", "relaunch: worker %s (stage %d, last record 0x%X, ring rd %llu wr %llu local %llu, async %d)", s_workerDone.load() ? "returned" : "did not return in 2 s",
+         s_workerStage.load(), s_workerLastLen.load(), (unsigned long long)s_ringRd.load(), (unsigned long long)s_ringWr.load(),
+         (unsigned long long)s_wrLocal, int(s_async.load())); melee_nx_log_flush();
     s_workerUp = false;
     s_async.store(false, std::memory_order_relaxed);
     gxGpSetAsync(false);
