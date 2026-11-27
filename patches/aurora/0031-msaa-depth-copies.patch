@@ -1,0 +1,194 @@
+diff --git a/lib/gfx/encoding.cpp b/lib/gfx/encoding.cpp
+index bb4a36a..99365a3 100644
+--- a/lib/gfx/encoding.cpp
++++ b/lib/gfx/encoding.cpp
+@@ -257,13 +257,19 @@ void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& passInfo,
+     const bool needsScaling = dstWidth != static_cast<uint32_t>(passInfo.resolveRect.width) ||
+                               dstHeight != static_cast<uint32_t>(passInfo.resolveRect.height);
+     const bool isDepth = gx::is_depth_format(passInfo.resolveFormat);
++    wgpu::TextureView depthView = passInfo.copySourceDepthView;
+     if (isDepth && passInfo.msaaSamples > 1) {
+-      Log.fatal("Depth tex copies from multisampled EFB targets are not supported");
++      // (sample 0 of each pixel first, as Dolphin's depth copies with MSAA)
++      const auto& efbSize = passInfo.colorAttachments[SceneColorAttachmentIndex].size;
++      depthView = tex_copy_conv::resolve_depth_ms(cmd, passInfo.copySourceDepthView, efbSize.width, efbSize.height);
++      if (!depthView) {
++        Log.fatal("Depth tex copies from multisampled EFB targets are not supported");
++      }
+     }
+     const tex_copy_conv::ConvRequest convReq{
+         .fmt = passInfo.resolveFormat,
+         .srcFmt = passInfo.resolveSourceFormat,
+-        .srcView = isDepth ? passInfo.copySourceDepthView : passInfo.copySourceView,
++        .srcView = isDepth ? depthView : passInfo.copySourceView,
+         .uniformRange = passInfo.resolveUniformRange,
+         .dst = passInfo.resolveTarget,
+         .sampleFilter = needsScaling ? tex_copy_conv::SampleFilter::Linear : tex_copy_conv::SampleFilter::Nearest,
+diff --git a/lib/gfx/tex_copy_conv.cpp b/lib/gfx/tex_copy_conv.cpp
+index 91594a1..44fdb11 100644
+--- a/lib/gfx/tex_copy_conv.cpp
++++ b/lib/gfx/tex_copy_conv.cpp
+@@ -337,6 +337,25 @@ var<private> positions: array<vec2f, 3> = array(
+ }
+ )"sv;
+ 
++// Multisampled depth -> single-sampled depth (sample 0), for depth texture copies with MSAA
++static constexpr std::string_view DepthResolveShaderMS = R"(
++@group(0) @binding(0) var src: texture_depth_multisampled_2d;
++
++var<private> positions: array<vec2f, 3> = array(
++    vec2f(-1.0, 1.0),
++    vec2f(-1.0, -3.0),
++    vec2f(3.0, 1.0),
++);
++
++@vertex fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
++    return vec4f(positions[vi], 0.0, 1.0);
++}
++
++@fragment fn fs_main(@builtin(position) pos: vec4f) -> @builtin(frag_depth) f32 {
++    return textureLoad(src, vec2i(pos.xy), 0);
++}
++)"sv;
++
+ struct ConvPipeline {
+   GXTexFmt fmt;
+   std::string_view fragShader;
+@@ -381,6 +400,54 @@ static wgpu::BindGroupLayout g_depthSnapshotBindGroupLayout;
+ static wgpu::BindGroupLayout g_depthSnapshotBindGroupLayoutMS;
+ static wgpu::RenderPipeline g_depthSnapshotPipeline;
+ static wgpu::RenderPipeline g_depthSnapshotPipelineMS;
++static wgpu::RenderPipeline g_depthResolvePipelineMS;
++static wgpu::Texture g_resolvedDepth;
++static wgpu::TextureView g_resolvedDepthView;
++static uint32_t g_resolvedDepthWidth = 0;
++static uint32_t g_resolvedDepthHeight = 0;
++
++static wgpu::RenderPipeline create_depth_resolve_pipeline(const wgpu::BindGroupLayout& bindGroupLayout) {
++  const std::string source{DepthResolveShaderMS};
++  const wgpu::ShaderSourceWGSL wgslSource{wgpu::ShaderSourceWGSL::Init{
++      .code = source.c_str(),
++  }};
++  const wgpu::ShaderModuleDescriptor moduleDescriptor{
++      .nextInChain = &wgslSource,
++      .label = "Depth Resolve MS",
++  };
++  const auto module = g_device.CreateShaderModule(&moduleDescriptor);
++  const wgpu::FragmentState fragmentState{
++      .module = module,
++      .entryPoint = "fs_main",
++      .targetCount = 0,
++  };
++  const wgpu::DepthStencilState depthStencil{
++      .format = webgpu::g_graphicsConfig.depthFormat,
++      .depthWriteEnabled = true,
++      .depthCompare = wgpu::CompareFunction::Always,
++  };
++  const wgpu::PipelineLayoutDescriptor layoutDescriptor{
++      .bindGroupLayoutCount = 1,
++      .bindGroupLayouts = &bindGroupLayout,
++  };
++  const auto pipelineLayout = g_device.CreatePipelineLayout(&layoutDescriptor);
++  const wgpu::RenderPipelineDescriptor pipelineDescriptor{
++      .label = "Depth Resolve MS",
++      .layout = pipelineLayout,
++      .vertex =
++          wgpu::VertexState{
++              .module = module,
++              .entryPoint = "vs_main",
++          },
++      .primitive =
++          wgpu::PrimitiveState{
++              .topology = wgpu::PrimitiveTopology::TriangleList,
++          },
++      .depthStencil = &depthStencil,
++      .fragment = &fragmentState,
++  };
++  return g_device.CreateRenderPipeline(&pipelineDescriptor);
++}
+ 
+ static wgpu::BindGroupLayout create_depth_snapshot_layout(bool multisampled, const char* label) {
+   const std::array entries{
+@@ -581,6 +648,9 @@ void initialize() {
+         create_depth_snapshot_pipeline(DepthSnapshotShader, g_depthSnapshotBindGroupLayout, "Depth Snapshot");
+     g_depthSnapshotPipelineMS =
+         create_depth_snapshot_pipeline(DepthSnapshotShaderMS, g_depthSnapshotBindGroupLayoutMS, "Depth Snapshot MS");
++    if (webgpu::g_graphicsConfig.msaaSamples > 1) {
++      g_depthResolvePipelineMS = create_depth_resolve_pipeline(g_depthSnapshotBindGroupLayoutMS);
++    }
+   }
+ 
+   static constexpr wgpu::SamplerDescriptor nearestSamplerDescriptor{
+@@ -609,6 +679,58 @@ void shutdown() {
+   g_depthSnapshotBindGroupLayoutMS = {};
+   g_depthSnapshotPipeline = {};
+   g_depthSnapshotPipelineMS = {};
++  g_depthResolvePipelineMS = {};
++  g_resolvedDepthView = {};
++  g_resolvedDepth = {};
++  g_resolvedDepthWidth = g_resolvedDepthHeight = 0;
++}
++
++wgpu::TextureView resolve_depth_ms(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& srcDepth, uint32_t width,
++                                   uint32_t height) {
++  if (!g_depthResolvePipelineMS || width == 0 || height == 0) {
++    return {};
++  }
++  if (!g_resolvedDepth || g_resolvedDepthWidth != width || g_resolvedDepthHeight != height) {
++    const wgpu::TextureDescriptor textureDescriptor{
++        .label = "Resolved Depth",
++        .usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding,
++        .size = {width, height, 1},
++        .format = webgpu::g_graphicsConfig.depthFormat,
++    };
++    g_resolvedDepth = g_device.CreateTexture(&textureDescriptor);
++    g_resolvedDepthView = g_resolvedDepth.CreateView();
++    g_resolvedDepthWidth = width;
++    g_resolvedDepthHeight = height;
++  }
++  const std::array bindGroupEntries{
++      wgpu::BindGroupEntry{
++          .binding = 0,
++          .textureView = srcDepth,
++      },
++  };
++  const wgpu::BindGroupDescriptor bindGroupDescriptor{
++      .layout = g_depthSnapshotBindGroupLayoutMS,
++      .entryCount = bindGroupEntries.size(),
++      .entries = bindGroupEntries.data(),
++  };
++  const auto bindGroup = g_device.CreateBindGroup(&bindGroupDescriptor);
++  const wgpu::RenderPassDepthStencilAttachment depthAttachment{
++      .view = g_resolvedDepthView,
++      .depthLoadOp = wgpu::LoadOp::Clear,
++      .depthStoreOp = wgpu::StoreOp::Store,
++      .depthClearValue = 1.f,
++  };
++  const wgpu::RenderPassDescriptor renderPassDescriptor{
++      .label = "Depth Resolve Pass",
++      .depthStencilAttachment = &depthAttachment,
++      .timestampWrites = webgpu::gpu_prof::pass_writes("Depth resolve"),
++  };
++  const auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
++  pass.SetPipeline(g_depthResolvePipelineMS);
++  pass.SetBindGroup(0, bindGroup);
++  pass.Draw(3);
++  pass.End();
++  return g_resolvedDepthView;
+ }
+ 
+ static void execute(const wgpu::CommandEncoder& cmd, const ConvRequest& req, const wgpu::RenderPipeline& pipeline) {
+diff --git a/lib/gfx/tex_copy_conv.hpp b/lib/gfx/tex_copy_conv.hpp
+index 47ec42f..3555c17 100644
+--- a/lib/gfx/tex_copy_conv.hpp
++++ b/lib/gfx/tex_copy_conv.hpp
+@@ -41,5 +41,9 @@ void blit(const wgpu::CommandEncoder& cmd, const ConvRequest& req);
+ bool snapshot_depth_supported() noexcept;
+ void snapshot_depth(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& srcDepth, uint32_t msaaSamples,
+                     const wgpu::TextureView& dst);
++// A multisampled depth buffer's sample 0 in a single-sampled depth texture of that size (kept
++// between calls), for depth texture copies from a multisampled EFB; null if unsupported.
++wgpu::TextureView resolve_depth_ms(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& srcDepth, uint32_t width,
++                                   uint32_t height);
+ 
+ } // namespace aurora::gfx::tex_copy_conv

@@ -1,0 +1,4 @@
+# Executable layout of GSWE64.
+# embedded <addr>: a DOL-format image stored at <addr> (inside a DOL section) that the game
+#                  maps to virtual memory with its own page tables (0x7FC00000+).
+embedded 80100000

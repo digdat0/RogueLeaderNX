@@ -1,0 +1,48 @@
+# Game data never goes in the repo: users bring their own disc.
+*.rvz
+*.iso
+*.gcm
+*.ciso
+*.dol
+orig/
+# Build output and generated (recompiled) code
+build/
+gen/
+# Local tool binaries
+.tools/
+__pycache__/
+*.pyc
+saves/
+red_two.log
+
+# --- RL-NX (Switch port) -----------------------------------------------------
+build-switch/
+build-switch-dawn/
+build-switch-sdl/
+debug/
+ref/
+*.nro
+*.elf
+*.nso
+*.kip
+# what the port writes on the SD card / in the repo root while testing
+sdcard/
+logs/
+cache/
+user/
+config/*.ini
+switch/seed/*.bin
+switch/seed/*.db
+# the shader database built from console caches
+*-shaderdb.bin
+*-shaderdb.json
+# the user's own icon (a generated box-art frame stays out of git)
+switch/icon.png
+switch/icon.jpg
+res/icon.ico
+
+# RL-NX: local test output, not for the repo
+smoke-logs/
+syms.tmp
+/boot.cfg
+build-switch-*/

@@ -1,0 +1,72 @@
+diff --git a/lib/input/profiles.cpp b/lib/input/profiles.cpp
+--- a/lib/input/profiles.cpp
++++ b/lib/input/profiles.cpp
+@@ -9,6 +9,7 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <list>
++#include <map>
+ #include <set>
+ 
+ namespace aurora::pad {
+@@ -29,6 +30,13 @@ std::filesystem::path directory;
+ std::optional<LegacyMigration> migration;
+ uint64_t generation = 1;
+ bool loaded = false;
++// Ports are assigned on every input event and every PAD read. Each SDL gamepad query takes SDL's
++// joystick lock, which a device scan on another thread can hold for hundreds of milliseconds, so
++// assigning makes no SDL calls once it knows a controller: identities do not change while a
++// controller is connected (source ids are never reused), and a player index is set only when it
++// changes.
++std::map<input::SourceId, ControllerIdentity> identities;
++std::map<input::SourceId, int> playerIndices;
+ 
+ std::string normalize_serial(std::string serial) {
+   std::erase_if(serial, [](char c) { return c == ':' || c == '-'; });
+@@ -118,12 +126,19 @@ void assign() {
+   }
+ 
+   for (const auto source : available) {
+-    auto* gamepad = SDL_GetGamepadFromID(input::gamepad_for_source(source));
+     const auto it = std::ranges::find(assigned, source);
+     const int player = it == assigned.end() ? -1 : static_cast<int>(it - assigned.begin());
++    if (const auto known = playerIndices.find(source); known != playerIndices.end() && known->second == player) {
++      continue;
++    }
++    auto* gamepad = SDL_GetGamepadFromID(input::gamepad_for_source(source));
++    if (gamepad == nullptr) {
++      continue;
++    }
+     if (SDL_GetGamepadPlayerIndex(gamepad) != player) {
+       SDL_SetGamepadPlayerIndex(gamepad, player);
+     }
++    playerIndices[source] = player;
+   }
+ }
+ 
+@@ -645,7 +660,16 @@ Profile decode_profile(const Json& j, ProfileTarget target) {
+ } // namespace
+ 
+ std::optional<ControllerIdentity> controller_identity(input::SourceId source) {
+-  auto* gamepad = SDL_GetGamepadFromID(input::gamepad_for_source(source));
++  const SDL_JoystickID joystick = input::gamepad_for_source(source);
++  if (joystick == 0) {  // not a live controller
++    identities.erase(source);
++    playerIndices.erase(source);
++    return std::nullopt;
++  }
++  if (const auto it = identities.find(source); it != identities.end()) {
++    return it->second;
++  }
++  auto* gamepad = SDL_GetGamepadFromID(joystick);
+   if (!gamepad) {
+     return std::nullopt;
+   }
+@@ -660,6 +684,7 @@ std::optional<ControllerIdentity> controller_identity(input::SourceId source) {
+   id.pid = SDL_GetGamepadProduct(gamepad);
+   const char* name = SDL_GetGamepadName(gamepad);
+   id.name = name ? name : "Controller";
++  identities.emplace(source, id);
+   return id;
+ }
+ 

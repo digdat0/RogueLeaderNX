@@ -1,0 +1,67 @@
+diff --git a/lib/gfx/pipeline_cache.cpp b/lib/gfx/pipeline_cache.cpp
+index 46a9903..798f249 100644
+--- a/lib/gfx/pipeline_cache.cpp
++++ b/lib/gfx/pipeline_cache.cpp
+@@ -1029,6 +1029,10 @@ static size_t load_pipeline_cache_entries(ShaderType type, uint32_t configVersio
+     if (config.version != configVersion) {
+       continue;
+     }
++    if constexpr (std::is_same_v<PipelineConfig, gx::PipelineConfig>) {
++      // rows stored before normalization: the same shaders under the keys draws now use
++      gx::normalize_pipeline_config(config);
++    }
+ 
+     remember_pipeline_config(type, config, firstFrameUsed, false);
+     ++acceptedRows;
+diff --git a/lib/gx/gx.cpp b/lib/gx/gx.cpp
+index 44d9ee9..c154a74 100644
+--- a/lib/gx/gx.cpp
++++ b/lib/gx/gx.cpp
+@@ -377,6 +377,25 @@ wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, const gfx::Ren
+   return g_device.CreateRenderPipeline(&descriptor);
+ }
+ 
++// The konst selectors live in TEV_KSEL registers shared by pairs of stages and keep what the
++// last draw set, so a stage that reads no KONST input still carries one. In the pipeline key
++// that made up to three pipelines of one shader (Rogue Leader: 6,132 cached, 2,123 distinct),
++// and a draw whose variant was not built yet was skipped until it was: objects popped in.
++void normalize_pipeline_config(PipelineConfig& config) noexcept {
++  auto& sc = config.shaderConfig;
++  for (u32 i = 0; i < sc.tevStageCount && i < MaxTevStages; ++i) {
++    auto& stage = sc.tevStages[i];
++    const auto& c = stage.colorPass;
++    const auto& a = stage.alphaPass;
++    if (c.a != GX_CC_KONST && c.b != GX_CC_KONST && c.c != GX_CC_KONST && c.d != GX_CC_KONST) {
++      stage.kcSel = TevStage{}.kcSel;
++    }
++    if (a.a != GX_CA_KONST && a.b != GX_CA_KONST && a.c != GX_CA_KONST && a.d != GX_CA_KONST) {
++      stage.kaSel = TevStage{}.kaSel;
++    }
++  }
++}
++
+ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXVtxFmt fmt) noexcept {
+   ZoneScoped;
+ 
+@@ -441,6 +460,7 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
+     config.shaderConfig.tevStages[i] = g_gxState.tevStages[i];
+   }
+   config.shaderConfig.tevStageCount = g_gxState.numTevStages;
++  normalize_pipeline_config(config);
+   for (u8 i = 0; i < g_gxState.numIndStages; ++i) {
+     config.shaderConfig.indStages[i] = g_gxState.indStages[i];
+   }
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index b7126e3..4f8d17d 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -599,6 +599,9 @@ struct BindGroupRanges {
+   std::array<gfx::Range, MaxIndexAttr> vaRanges{};
+ };
+ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXVtxFmt fmt) noexcept;
++// Clears state the shader does not read (konst selectors of stages without a KONST input), so
++// equal shaders share one pipeline; also applied to configs loaded from the pipeline cache.
++void normalize_pipeline_config(PipelineConfig& config) noexcept;
+ wgpu::RenderPipeline build_pipeline(const PipelineConfig& config, const gfx::RenderTargetLayout& layout,
+                                     const PipelineOptions& options, ArrayRef<wgpu::VertexBufferLayout> vtxBuffers,
+                                     wgpu::ShaderModule shader, const char* label) noexcept;

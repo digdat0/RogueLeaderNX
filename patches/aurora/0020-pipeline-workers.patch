@@ -1,0 +1,72 @@
+diff --git a/lib/gfx/pipeline_cache.cpp b/lib/gfx/pipeline_cache.cpp
+index 798f249..64ae234 100644
+--- a/lib/gfx/pipeline_cache.cpp
++++ b/lib/gfx/pipeline_cache.cpp
+@@ -80,7 +80,11 @@ constexpr size_t BuildPipelinesPerFrame = 5;
+ #else
+ constexpr size_t BuildPipelinesPerFrame = 1;
+ #endif
+-static std::thread g_pipelineThread;
++// Several workers: creating a pipeline is mostly compiling its shaders (~25 ms each without
++// Dawn's blob cache, e.g. after a graphics driver update), and a game's whole cache is built at
++// startup. Pipeline building shares nothing but the device, which the one worker already used
++// next to the render threads.
++static std::vector<std::thread> g_pipelineThreads;
+ static std::atomic_bool g_pipelineThreadEnd = false;
+ static std::condition_variable g_pipelineQueueCv;
+ static std::condition_variable g_pipelineReadyCv;
+@@ -960,17 +964,15 @@ static void pipeline_worker() {
+   tracy::SetThreadName("Pipeline compilation thread");
+ #endif
+ 
+-  bool hasMore = false;
+   while (g_hasPipelineThread || g_pipelinesPerFrame < BuildPipelinesPerFrame) {
+     PendingPipeline pending;
+     {
+       std::unique_lock lock{g_pipelineMutex};
+       if (g_hasPipelineThread) {
+-        if (!hasMore) {
+-          g_pipelineQueueCv.wait(lock, [] {
+-            return !g_pipelineQueue.empty() || !g_backgroundPipelineQueue.empty() || g_pipelineThreadEnd;
+-          });
+-        }
++        // (always the predicate: with several workers another may have taken what was left)
++        g_pipelineQueueCv.wait(lock, [] {
++          return !g_pipelineQueue.empty() || !g_backgroundPipelineQueue.empty() || g_pipelineThreadEnd;
++        });
+       } else if (g_pipelineQueue.empty() && g_backgroundPipelineQueue.empty()) {
+         return;
+       }
+@@ -987,7 +989,6 @@ static void pipeline_worker() {
+       std::lock_guard lock{g_pipelineMutex};
+       g_pipelines.try_emplace(pending.hash, std::move(result));
+       g_pendingPipelines.erase(pending.hash);
+-      hasMore = !g_pipelineQueue.empty() || !g_backgroundPipelineQueue.empty();
+     }
+     if (!g_hasPipelineThread) {
+       g_pipelinesPerFrame += std::max(1u, pipelineCount);
+@@ -1150,7 +1151,11 @@ void initialize_pipeline_cache() {
+     g_hasPipelineThread = false;
+   } else {
+     g_hasPipelineThread = true;
+-    g_pipelineThread = std::thread(pipeline_worker);
++    const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
++    const unsigned workers = std::clamp(cores / 2, 1u, 8u);
++    for (unsigned i = 0; i < workers; ++i) {
++      g_pipelineThreads.emplace_back(pipeline_worker);
++    }
+   }
+ 
+   const size_t loadedCount = load_pipeline_cache();
+@@ -1169,7 +1174,10 @@ void shutdown_pipeline_cache() {
+     g_pipelineThreadEnd = true;
+     g_pipelineQueueCv.notify_all();
+     g_pipelineReadyCv.notify_all();
+-    g_pipelineThread.join();
++    for (auto& thread : g_pipelineThreads) {
++      thread.join();
++    }
++    g_pipelineThreads.clear();
+   }
+   g_hasPipelineThread = false;
+ 

@@ -1,0 +1,15 @@
+diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
+index 5650404..a0d991e 100644
+--- a/lib/gx/shader.cpp
++++ b/lib/gx/shader.cpp
+@@ -568,6 +568,10 @@ std::string vtx_attr(const ShaderConfig& config, GXAttr attr) {
+     if (attr == GX_VA_CLR0 || attr == GX_VA_CLR1) {
+       return "vec4f(0.0, 0.0, 0.0, 0.0)"s;
+     }
++    if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) {
++      // A texgen reading coordinates the vertex format does not send: zero, not a crash.
++      return "vec2f(0.0, 0.0)"s;
++    }
+     UNLIKELY FATAL("unmapped vtx attr {}", underlying(attr));
+   }
+   if (attr == GX_VA_POS) {

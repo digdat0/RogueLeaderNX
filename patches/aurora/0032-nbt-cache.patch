@@ -1,0 +1,286 @@
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index 1603271..426e119 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -174,6 +174,7 @@ struct DrawCache {
+   bool hasFogRange = false;
+   GXVtxFmt lastDrawFmt = GX_MAX_VTXFMT;
+   u32 zFreezePlaneGen = ~0u; // plane in the current uniform
++  u32 nbtCacheGen = ~0u;     // GXState::nbtCache in the current uniform
+ };
+ DrawCache sDrawCache;
+ 
+@@ -658,6 +659,81 @@ void note_zfreeze_reference(GXVtxFmt fmt, const u8* lastVerts, u32 vtxSize) noex
+   z.pending = true;
+ }
+ 
++// The binormal / tangent cache (GXState::nbtCache): a draw whose format has NBT normals leaves its
++// last vertex's binormal and tangent behind, as the vertex unit holds them; draws without them
++// that need them (emboss texgens, texgens from the binormal / tangent) read those.
++void note_nbt(GXVtxFmt fmt, const u8* lastVert) noexcept {
++  const auto& state = g_gxState;
++  const auto type = state.vtxDesc[GX_VA_NRM];
++  const auto& nrmFmt = state.vtxFmts[fmt].attrs[GX_VA_NRM];
++  if (type == GX_NONE || nrmFmt.cnt == GX_NRM_XYZ) {
++    return;
++  }
++  u32 offset = 0;
++  for (int i = GX_VA_PNMTXIDX; i < GX_VA_NRM; ++i) {
++    const auto attr = static_cast<GXAttr>(i);
++    const auto t = state.vtxDesc[i];
++    if (t == GX_DIRECT) {
++      const auto& f = state.vtxFmts[fmt].attrs[i];
++      offset += comp_type_size(attr, f.type) * comp_cnt_count(attr, f.cnt);
++    } else if (t == GX_INDEX8 || t == GX_INDEX16) {
++      offset += t == GX_INDEX8 ? 1 : 2;
++    }
++  }
++  const u8* src = lastVert + offset;
++  const u32 size = comp_type_size(GX_VA_NRM, nrmFmt.type);
++  const u8* b = nullptr;
++  const u8* t = nullptr;
++  bool le = false;
++  if (type == GX_DIRECT) {
++    b = src + 3 * size;
++    t = src + 6 * size;
++  } else {
++    const auto& array = state.arrays[GX_VA_NRM];
++    const u8* data = static_cast<const u8*>(array.data);
++    const u32 idxSize = type == GX_INDEX8 ? 1 : 2;
++    const auto index = [&](u32 n) { return idxSize == 1 ? u32(src[n]) : (u32(src[2 * n]) << 8 | src[2 * n + 1]); };
++    // NBT3: three indices (normal, binormal, tangent) of 3-component entries; NBT: one index of a
++    // 9-component entry
++    const u32 bAt = nrmFmt.cnt == GX_NRM_NBT3 ? index(1) * array.stride : index(0) * array.stride + 3 * size;
++    const u32 tAt = nrmFmt.cnt == GX_NRM_NBT3 ? index(2) * array.stride : index(0) * array.stride + 6 * size;
++    if (data == nullptr || bAt > array.size || tAt > array.size || 3 * size > array.size - bAt ||
++        3 * size > array.size - tAt) {
++      return;
++    }
++    b = data + bAt;
++    t = data + tAt;
++    le = array.le;
++  }
++  const auto read3 = [&](const u8* p) {
++    return Vec4<float>{read_component(p, nrmFmt.type, nrmFmt.frac, le),
++                       read_component(p + size, nrmFmt.type, nrmFmt.frac, le),
++                       read_component(p + 2 * size, nrmFmt.type, nrmFmt.frac, le), 0.f};
++  };
++  const Vec4<float> binormal = read3(b), tangent = read3(t);
++  auto& cache = g_gxState.nbtCache;
++  if (std::memcmp(&cache[0], &binormal, sizeof binormal) != 0 || std::memcmp(&cache[1], &tangent, sizeof tangent) != 0) {
++    cache[0] = binormal;
++    cache[1] = tangent;
++    ++g_gxState.nbtCacheGen;
++  }
++}
++
++// The draw's shader reads GXState::nbtCache (ShaderInfo::nbtCache, a superset: any enabled texgen)
++bool reads_nbt_cache(GXVtxFmt fmt) noexcept {
++  const auto& state = g_gxState;
++  if (state.vtxDesc[GX_VA_NRM] != GX_NONE && state.vtxFmts[fmt].attrs[GX_VA_NRM].cnt != GX_NRM_XYZ) {
++    return false;
++  }
++  for (u32 i = 0; i < state.numTexGens && i < MaxTexCoord; ++i) {
++    const auto& tcg = state.tcgs[i];
++    if ((tcg.type >= GX_TG_BUMP0 && tcg.type <= GX_TG_BUMP7) || tcg.src == GX_TG_BINRM || tcg.src == GX_TG_TANGENT) {
++      return true;
++    }
++  }
++  return false;
++}
++
+ void update_zfreeze_plane() noexcept {
+   auto& z = sZRef;
+   if (!z.pending) {
+@@ -963,6 +1039,7 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
+                                  : build_uniform(cache.shaderInfo);
+     cache.uniformUber = useUber;
+     cache.zFreezePlaneGen = state.zFreezePlaneGen;
++    cache.nbtCacheGen = state.nbtCacheGen;
+     state.dirty &= ~DirtyUniform;
+   }
+   if (cache.config.shaderConfig.fogRangeEnabled) {
+@@ -1073,6 +1150,11 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader&
+     // before any culling: the reference triangle is often drawn with GX_CULL_ALL
+     note_zfreeze_reference(fmt, verts + (vtxCount - 3) * vtxSize, vtxSize);
+   }
++  // binormal / tangent left behind for draws without them (before culling, like zfreeze's)
++  note_nbt(fmt, verts + (vtxCount - 1) * vtxSize);
++  if (sDrawCache.nbtCacheGen != g_gxState.nbtCacheGen && reads_nbt_cache(fmt)) {
++    g_gxState.dirty |= DirtyUniform;
++  }
+ 
+   const bool cleanState = g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt && sDrawCache.lineMode == 0 &&
+                           prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS;
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index 89ca3c5..a9af7cd 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -65,7 +65,7 @@ constexpr u32 MaxIndTexMtxs = 3;
+ constexpr u32 MaxVtxFmt = GX_MAX_VTXFMT;
+ constexpr u32 MaxPnMtx = (GX_PNMTX9 / 3) + 1;
+ constexpr u32 MaxIndexAttr = 12; // VA_POS -> VA_TEX7
+-constexpr u32 MaxUniformSize = 4096; // the ubershader's block is 3872 bytes (uber.cpp)
++constexpr u32 MaxUniformSize = 4096; // the ubershader's block is 3904 bytes (uber.cpp)
+ constexpr u32 XfRegCount = 0x58; // 0x1000-0x1057
+ 
+ enum DirtyFlag : u8 {
+@@ -408,6 +408,12 @@ struct GXState {
+   bool zFreeze = false;
+   Vec4<float> zFreezePlane{0.f, 0.f, 0.f, 0.f};
+   u32 zFreezePlaneGen = 0;
++  // The binormal and tangent the vertex unit last held (as loaded: before the normal matrix),
++  // from the last vertex of the last draw whose format had NBT normals. Hardware uses them for
++  // vertices without binormal / tangent data (Rogue Leader's terrain emboss: a dummy triangle
++  // with them, then the terrain with normals only). nbtCacheGen counts changes.
++  std::array<Vec4<float>, 2> nbtCache{}; // binormal, tangent
++  u32 nbtCacheGen = 0;
+   bool depthCompare = true;
+   bool depthUpdate = true;
+   bool colorUpdate = true;
+@@ -595,6 +601,7 @@ struct ShaderInfo {
+   bool lightingEnabled : 1 = false;
+   u8 lineMode : 2 = 0;
+   bool zFreeze : 1 = false;
++  bool nbtCache : 1 = false; // binormal / tangent read without NBT data: GXState::nbtCache (uniform)
+ };
+ struct BindGroupRanges {
+   std::array<gfx::Range, MaxIndexAttr> vaRanges{};
+diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
+index b87e05e..3e8ded5 100644
+--- a/lib/gx/shader.cpp
++++ b/lib/gx/shader.cpp
+@@ -756,8 +756,8 @@ enum class NbtSlice : u8 {
+ auto attr_load_nbt_slice(const ShaderConfig& config, NbtSlice slice, std::string_view vidx) -> std::string {
+   const auto& mapping = config.attrs[GX_VA_NRM];
+   if (mapping.attrType == GX_NONE || mapping.cnt != 9) {
+-    // Hardware uses the binormal/tangent the vertex unit last held; with no NBT data in the
+-    // vertex format, zero is the closest stateless value (an emboss texgen then adds no shift).
++    // (not reached by the vertex shader: it reads the binormal / tangent the vertex unit last
++    // held from the uniform then, ShaderInfo::nbtCache)
+     return "vec3f(0.0, 0.0, 0.0)";
+   }
+   const auto sliceIdx = static_cast<u32>(slice);
+@@ -1002,13 +1002,17 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+     needsBinrm = needsBinrm || config.tcgs[i].src == GX_TG_BINRM || emboss;
+     needsTangent = needsTangent || config.tcgs[i].src == GX_TG_TANGENT || emboss;
+   }
++  // Without NBT data in the vertex format: the binormal / tangent the vertex unit last held
++  // (GXState::nbtCache, in the uniform; transformed by the current normal matrix like loaded ones)
+   if (needsBinrm) {
+     vtxXfrAttrsPre += fmt::format("\n    let {} = {};", nbt_slice_local(NbtSlice::B),
+-                                  attr_load_nbt_slice(config, NbtSlice::B, vidxAttr));
++                                  info.nbtCache ? "ubuf.nbt_cache[0].xyz"s
++                                                : attr_load_nbt_slice(config, NbtSlice::B, vidxAttr));
+   }
+   if (needsTangent) {
+     vtxXfrAttrsPre += fmt::format("\n    let {} = {};", nbt_slice_local(NbtSlice::T),
+-                                  attr_load_nbt_slice(config, NbtSlice::T, vidxAttr));
++                                  info.nbtCache ? "ubuf.nbt_cache[1].xyz"s
++                                                : attr_load_nbt_slice(config, NbtSlice::T, vidxAttr));
+   }
+ 
+   if (config.lineMode == 0) {
+@@ -1067,6 +1071,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+     // zfreeze reference plane in render target pixels (see GXState::zFreezePlane)
+     uniBufAttrs += "\n    zfreeze_plane: vec4f,";
+   }
++  if (info.nbtCache) {
++    uniBufAttrs += "\n    nbt_cache: array<vec4f, 2>,"; // binormal, tangent (GXState::nbtCache)
++  }
+   // Indexed by XF matrix row / 3: position matrices (rows 0-27), texture matrices (rows 30-57),
+   // then row 60 = GX_IDENTITY, which games also use as a position matrix (screen-space quads).
+   uniBufAttrs += fmt::format("\n    postex_mtx: array<mat3x4f, {}>,", MaxPnMtx + MaxTexMtx + 1);
+diff --git a/lib/gx/shader_info.cpp b/lib/gx/shader_info.cpp
+index f20ca63..dae53e5 100644
+--- a/lib/gx/shader_info.cpp
++++ b/lib/gx/shader_info.cpp
+@@ -327,6 +327,23 @@ ShaderInfo build_shader_info(const ShaderConfig& config) noexcept {
+     }
+   }
+ 
++  // Binormal / tangent wanted (emboss, or a texgen from them) by a vertex format without NBT
++  // normals: the ones the vertex unit last held, from the uniform (GXState::nbtCache)
++  {
++    bool needsNbt = false;
++    for (int i = 0; i < info.sampledTexCoords.size(); ++i) {
++      const auto& tcg = config.tcgs[i];
++      needsNbt = needsNbt || (info.sampledTexCoords.test(i) &&
++                              ((tcg.type >= GX_TG_BUMP0 && tcg.type <= GX_TG_BUMP7) || tcg.src == GX_TG_BINRM ||
++                               tcg.src == GX_TG_TANGENT));
++    }
++    const auto& nrm = config.attrs[GX_VA_NRM];
++    if (needsNbt && (nrm.attrType == GX_NONE || nrm.cnt != 9)) {
++      info.nbtCache = true;
++      info.uniformSize += 2 * sizeof(Vec4<float>); // nbt_cache
++    }
++  }
++
+   // Texgens can consume a color channel even when TEV never reads it directly.
+   // Include these channels before calculating lighting and uniform requirements.
+   for (int i = 0; i < info.sampledTexCoords.size(); ++i) {
+@@ -540,6 +557,10 @@ static void fill_uniform(ByteBuffer& buf, const ShaderInfo& info) noexcept {
+   if (info.zFreeze) {
+     buf.append(g_gxState.zFreezePlane);
+   }
++  if (info.nbtCache) {
++    buf.append(g_gxState.nbtCache[0]);
++    buf.append(g_gxState.nbtCache[1]);
++  }
+ 
+   for (int i = 0; i < MaxPnMtx; i++) {
+     buf.append(g_gxState.pnMtx[i].pos);
+@@ -660,6 +681,7 @@ struct UberUniform {
+   u32 indStages[4];
+   u32 counts[4];
+   u32 flags[4];
++  Vec4<f32> nbtCache[2]; // GXState::nbtCache
+ };
+ static_assert(offsetof(UberUniform, proj) == 32);
+ static_assert(offsetof(UberUniform, postexMtx) == 128);
+@@ -667,7 +689,8 @@ static_assert(offsetof(UberUniform, lights) == 2000);
+ static_assert(offsetof(UberUniform, fog) == 2896);
+ static_assert(offsetof(UberUniform, stages) == 3328);
+ static_assert(offsetof(UberUniform, flags) == 3856);
+-static_assert(sizeof(UberUniform) == 3872);
++static_assert(offsetof(UberUniform, nbtCache) == 3872);
++static_assert(sizeof(UberUniform) == 3904);
+ static_assert(sizeof(UberUniform) <= MaxUniformSize);
+ 
+ // The specialized shaders wrap TEV inputs that may hold values outside 0-1 (a register whose last
+@@ -929,6 +952,8 @@ gfx::Range build_uber_uniform(const ShaderConfig& config, const ShaderInfo& info
+   }
+   u.flags[3] |= static_cast<u32>(info.usedIndStages.any());
+   u.flags[3] |= static_cast<u32>(config.attrs[GX_VA_NRM].attrType != GX_NONE) << 7;
++  u.nbtCache[0] = g_gxState.nbtCache[0];
++  u.nbtCache[1] = g_gxState.nbtCache[1];
+   return gfx::push_uniform(reinterpret_cast<const u8*>(&u), sizeof(u));
+ }
+ } // namespace aurora::gx
+diff --git a/lib/gx/uber.cpp b/lib/gx/uber.cpp
+index 9e2148b..f93a3a8 100644
+--- a/lib/gx/uber.cpp
++++ b/lib/gx/uber.cpp
+@@ -150,6 +150,7 @@ struct Uniform {
+     ind_stages: vec4u,
+     counts: vec4u,
+     flags: vec4u,
++    nbt_cache: array<vec4f, 2>,
+ };
+ 
+ @group(0) @binding(0)
+@@ -243,11 +244,12 @@ fn load_nrm(v: u32) -> vec3f {
+     return fetch_num(w, attr_offset(10u, w, v, 0u, 0u), min(extractBits(w, 2u, 4u), 3u)).xyz;
+ }
+ 
+-// Binormal (slice 1) / tangent (slice 2) of NBT normals; zero without them.
++// Binormal (slice 1) / tangent (slice 2) of NBT normals; without them the ones the vertex unit
++// last held (GXState::nbtCache).
+ fn load_nbt(v: u32, slice: u32) -> vec3f {
+     let w = attr_word(10u);
+     let t = w & 3u;
+-    if (t == 0u || extractBits(w, 2u, 4u) != 9u) { return vec3f(0.0); }
++    if (t == 0u || extractBits(w, 2u, 4u) != 9u) { return ubuf.nbt_cache[slice - 1u].xyz; }
+     let ct = extractBits(w, 6u, 3u);
+     let compsize = select(select(4u, 2u, ct == 2u || ct == 3u), 1u, ct <= 1u);
+     var dl_extra = 0u;

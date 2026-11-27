@@ -1,0 +1,42 @@
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index 41d6afb..1603271 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -476,6 +476,27 @@ ProjScale perspective_scale(float k, float v) noexcept {
+   return r >= 1.f ? ProjScale{1.f / r, 1.f, 1.f, xAdd} : ProjScale{1.f, r, 1.f, xAdd};
+ }
+ 
++// The picture of a letterboxed frame, drawn for a copy: cinematics render a 640x264 EFB in the
++// anti-aliased pixel format, copy it to a texture and stretch that into the short XFB (Rogue
++// Leader's crawl, cutscenes and credits). 2D drawn there is part of the picture (the credits'
++// names), so it opens with the picture as the picture's 3D does (perspective_scale: k wider and
++// v taller than it was drawn for) instead of keeping its 4:3 size around the middle of its
++// viewport - a 640x480 one, whose middle row (240) lies below the 264-line picture's (132): the
++// credits shrank by 304/480 toward the bottom, and their lines vanished a third of the way down
++// the screen (the game drops a line as it leaves the picture's top).
++constexpr float AaEfbHeight = 264.f;
++
++ProjScale letterbox_picture_scale(float k, float v) noexcept {
++  const float r = k / v;
++  if (r >= 1.f) {
++    return {1.f / r, 1.f};
++  }
++  // taller than drawn for: about the picture's middle row
++  const auto& vp = g_gxState.logicalViewport;
++  const float cy = vp.height > 0.f ? 1.f - 2.f * (AaEfbHeight * 0.5f - vp.top) / vp.height : 0.f;
++  return {1.f, r, 1.f, 0.f, cy * (1.f - r)};
++}
++
+ // 2D keeps its logical shape, centered (HUD, menus, text), unless the draw spans the whole
+ // viewport width (backgrounds, fades, letterbox bars, render-to-texture passes), which stretches.
+ // A screen-position sprite keeps its 4:3 shape around its own center, and its center goes where
+@@ -506,6 +527,9 @@ ProjScale ortho_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxSize,
+   if (minX <= -0.95f && maxX >= 0.95f) {
+     return {};
+   }
++  if (v > 1.f && g_gxState.pixelFmt == GX_PF_RGB565_Z16) {
++    return letterbox_picture_scale(k, v);
++  }
+   const float center = (minX + maxX) * 0.5f;
+   if (is_screen_sprite(prim, vtxCount)) {
+     const float cy = (minY + maxY) * 0.5f;

@@ -1,0 +1,29 @@
+diff --git a/lib/gx/gx.cpp b/lib/gx/gx.cpp
+index 490de4c..9aed929 100644
+--- a/lib/gx/gx.cpp
++++ b/lib/gx/gx.cpp
+@@ -207,6 +207,7 @@ wgpu::PrimitiveState to_primitive_state(GXCullMode gx_cullMode) {
+   case GX_CULL_BACK:
+     cullMode = wgpu::CullMode::Back;
+     break;
++  case GX_CULL_ALL: // polygon draws are skipped (command_processor.cpp); lines/points draw
+   case GX_CULL_NONE:
+     break;
+   }
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index dbf26b7..5824b53 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -384,6 +384,12 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
+   auto& state = g_gxState;
+   auto& cache = sDrawCache;
+ 
++  // GX_CULL_ALL discards every polygon (lines and points are not culled); WebGPU has no
++  // equivalent cull mode, so such draws are simply not issued.
++  if (state.cullMode == GX_CULL_ALL && line_mode_for_prim(prim) == 0) {
++    return;
++  }
++
+   DrawImmediateData immediates{.vtxStart = vertRange.offset, .currentPnMtx = state.currentPnMtx};
+   for (int i = GX_VA_POS; i <= GX_VA_TEX7; ++i) {
+     if (state.vtxDesc[i] != GX_INDEX8 && state.vtxDesc[i] != GX_INDEX16) {

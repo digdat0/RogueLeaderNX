@@ -1,0 +1,89 @@
+# <kind> <name|address>
+#   hle     replace with hle_<name> (src/runtime); the translated body stays as <fn>_orig
+#   savectx the function returns twice (its callers keep a jump buffer)
+#   entry   extra function entry the analysis cannot see
+#   noentry drop a false-positive entry
+#   idle    head of a spin-wait loop: its back-edge blocks the host thread until an event
+#           is due instead of spinning (the loop can only end through an interrupt)
+
+# OS context switching runs on host fibers (src/runtime/threads.cpp)
+savectx OSSaveContext
+hle     OSSaveContext
+hle     OSLoadContext
+hle     OSInitContext
+
+# Debug output and fatal paths (src/runtime/hle_os.cpp)
+hle     OSReport
+hle     PPCHalt
+
+# OS idle loop in __OSReschedule (0x8002E5EC): no runnable thread, interrupts enabled,
+# spins on RunQueueBits until an interrupt handler readies a thread
+idle    8002E724
+
+# MusyX: the DSP is emulated as infinitely fast, so a late command list costs it nothing.
+# The CPU-side estimate (time since the AI interrupt) can look like several ms when the
+# host is busy (the GPU runs synchronously), which made MusyX kill voices as "DSP overload".
+hle     salBuildCommandList
+
+# Port options (src/runtime/hle_game.cpp): frame delta at retrace rates above 59.94 Hz
+hle     GameFrameDelta
+# Cheats (settings): infinite lives, invincibility (the player's craft is never destroyed)
+hle     LoseLife
+hle     CraftDestroy
+hle     WeaponInit
+hle     WeaponUpdate
+# Skippable cutscenes: the game's own skip (A, scenes seen before) starts the port's skip too
+hle     SceneSkipAllowed
+hle     CameraSetup
+# Widescreen: CameraSetup's horizontal fov stops at 90 degrees (the cockpit's terrain at 2.13:1)
+hle     CameraHFovAtan
+# Widescreen: HUD cameras (the radar globe) build projections from the aspect their objects
+# copied when the mission started; after a resize that one is stale
+hle     MTXPerspective
+# Widescreen: the targeting computer's screen is a 2D quad at corners projected from 3D
+hle     TargetingPass
+# Widescreen: the flight reticle is 2D quads at the aim point projected with the (wide) camera
+hle     ReticleDraw
+# Widescreen: cutscene movies (quads in the 3D scene sized for the game's view) fill the screen
+hle     CutsceneVideoDraw
+# Widescreen: the terrain's span array is sized for the 4:3 view; wider views overflowed it.
+# Enlarged tables live in the port's arena, outside the game's heap: HeapFree maps them back
+hle     HeapAlloc
+hle     HeapFree
+# The game's heap full: an allocation that must not fail gets a block of the heap extension
+# (8 MiB after MEM1) instead of 0 (Vengeance on Kothlis); HeapFree gives such blocks back
+hle     HeapAllocFrom
+# Widescreen: the heightmap terrain's (Hoth) span table and the arrays laid out after it, by row count
+hle     TerrainRows
+hle     HeightTerrainSpans
+hle     HeightTerrainTiles
+# Cheat: perfect mission stats (the results record the screen and the medal use)
+hle     MissionResults
+# The game's own dither (a screen-space texture sized for 640x480): a coarse grid at higher resolutions
+hle     DitherStrength
+# Prisons of the Maw: the two dialogue gates before the force field reach the sky (the user flew over one)
+hle     AreaTriggerUpdate
+# Prisons of the Maw: force field panels that vanished (a generator disabled) no longer collide
+hle     MawShieldPanelHit
+# Cheat: all craft in the hangars (the craft passcodes and the medal checks, for the craft list only)
+hle     CraftMask
+hle     AllMissionsMedal
+hle     MissionMedal
+
+# RL-NX (Stage 9): matrix natives (src/runtime/hle_mtx.cpp; - menu NATIVE MTX). "abi" marks a native that follows
+# the calling convention and reads only what its recompiled body reads, so callers keep their call-site summaries
+# (emit.cpp) instead of the full spill around an opaque hook.
+hle     PSMTXConcat
+abi     PSMTXConcat
+hle     PSMTXMultVec
+abi     PSMTXMultVec
+hle     PSMTXInvRigid
+abi     PSMTXInvRigid
+
+# RL-NX (Stage 10): .movie frames through libjpeg-turbo (src/runtime/hle_movie.cpp; - menu NATIVE MOVIE)
+hle     MovieFrame512
+abi     MovieFrame512
+hle     MovieFrame640
+abi     MovieFrame640
+hle     MovieFrameAny
+abi     MovieFrameAny

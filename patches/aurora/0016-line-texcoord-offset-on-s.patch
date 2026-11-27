@@ -1,0 +1,18 @@
+diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
+index 9a96225..9219d3c 100644
+--- a/lib/gx/shader.cpp
++++ b/lib/gx/shader.cpp
+@@ -1270,10 +1270,11 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+           "\n    }}",
+           i);
+     } else if (config.lineMode != 0) {
+-      // GX_LINES / GX_LINESTRIP: offset one axis for perpendicular side
++      // GX_LINES / GX_LINESTRIP: S runs across the line's width (the enable bit is in the S
++      // coordinate's SU_SSIZE register; Dolphin also offsets S), T follows the vertices
+       vtxXfrAttrs += fmt::format(
+           "\n    if ((ubuf.line_texcoord_mask & (1u << {0})) != 0u && (vidx & 1u) != 0u) {{"
+-          "\n        tc{0}_proj.y += ubuf.line_tex_offset;"
++          "\n        tc{0}_proj.x += ubuf.line_tex_offset;"
+           "\n    }}",
+           i);
+     }

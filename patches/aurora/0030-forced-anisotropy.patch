@@ -1,0 +1,72 @@
+diff --git a/include/dolphin/gx/GXAurora.h b/include/dolphin/gx/GXAurora.h
+index 9aadcd4..d0305f1 100644
+--- a/include/dolphin/gx/GXAurora.h
++++ b/include/dolphin/gx/GXAurora.h
+@@ -231,6 +231,13 @@ void AuroraSetDisplayAspect(float aspect);
+  */
+ void AuroraSetLetterboxFill(bool fill);
+ 
++/**
++ * Anisotropic filtering forced on (Dolphin's "Anisotropic Filtering" enhancement): textures that
++ * are mipmapped and not point-sampled get at least `level` (1 = off, the game's own request only;
++ * 2, 4, 8 or 16), with linear filtering, which anisotropy needs. Takes effect from the next draw.
++ */
++void AuroraSetForcedAnisotropy(uint16_t level);
++
+ /**
+  * With a display aspect set: 2D draws (and off-center 3D ones) clearly on the left or right of
+  * the logical screen move to that edge of the wider target instead of keeping the 4:3 layout,
+diff --git a/lib/dolphin/gx/GXAurora.cpp b/lib/dolphin/gx/GXAurora.cpp
+index c514d3d..a87f740 100644
+--- a/lib/dolphin/gx/GXAurora.cpp
++++ b/lib/dolphin/gx/GXAurora.cpp
+@@ -50,6 +50,11 @@ void AuroraSetLetterboxFill(bool fill) {
+   g_gxState.letterboxFill = fill;
+ }
+ 
++void AuroraSetForcedAnisotropy(uint16_t level) {
++  aurora::gx::fifo::drain();
++  aurora::gfx::g_forcedAnisotropy.store(std::clamp<uint16_t>(level, 1, 16), std::memory_order_relaxed);
++}
++
+ void AuroraSetUberShaders(int mode) {
+   aurora::gx::fifo::drain();
+   aurora::gx::g_uberMode = mode <= 0   ? aurora::gx::UberMode::Off
+diff --git a/lib/gfx/texture.cpp b/lib/gfx/texture.cpp
+index f90454e..e3ee10c 100644
+--- a/lib/gfx/texture.cpp
++++ b/lib/gfx/texture.cpp
+@@ -310,6 +310,11 @@ wgpu::SamplerDescriptor TextureBind::get_descriptor() const noexcept {
+   float minLod = texObj.min_lod();
+   float maxLod = texObj.max_lod();
+   u16 maxAnisotropy = wgpu_aniso(texObj.max_aniso());
++  // Forced anisotropy (Dolphin's rule: not for textures point-sampled both ways)
++  if (const u16 forced = g_forcedAnisotropy.load(std::memory_order_relaxed);
++      forced > maxAnisotropy && (minFilter == wgpu::FilterMode::Linear || magFilter == wgpu::FilterMode::Linear)) {
++    maxAnisotropy = forced;
++  }
+   if (ref && ref->isReplacement) {
+     minLod = 0.f;
+     maxLod = 1000.f;
+diff --git a/lib/gfx/texture.hpp b/lib/gfx/texture.hpp
+index 7485f82..cb94c08 100644
+--- a/lib/gfx/texture.hpp
++++ b/lib/gfx/texture.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ #include <dolphin/gx.h>
+ 
++#include <atomic>
+ #include <utility>
+ 
+ #include "types.hpp"
+@@ -131,6 +132,9 @@ struct GXTlutObj_ {
+ static_assert(sizeof(GXTlutObj_) <= sizeof(GXTlutObj), "GXTlutObj too small!");
+ 
+ namespace aurora::gfx {
++// AuroraSetForcedAnisotropy: at least this much anisotropy for mipmapped, filtered textures (1: off)
++inline std::atomic<uint16_t> g_forcedAnisotropy{1};
++
+ struct TextureBind {
+   TextureHandle ref;
+   GXTexObj_ texObj;

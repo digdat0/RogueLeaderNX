@@ -1,0 +1,103 @@
+# Function names for GSWE64 (Star Wars: Rogue Leader, USA rev 0), identified by analysis.
+# <address> <name>
+80003100 __start
+80029c18 OSSetCurrentContext
+80029c74 OSGetCurrentContext
+80029c80 OSSaveContext
+80029d00 OSLoadContext
+80029dd8 OSGetStackPointer
+80029de0 OSClearContext
+80029e04 OSInitContext
+80029ec0 OSDumpContext
+8002bbf4 OSDisableInterrupts
+8002bc08 OSEnableInterrupts
+8002bc1c OSRestoreInterrupts
+80027BD8 PPCHalt                 # sync; nop; li r3,0; nop; b . (the end of every fatal path)
+8002A234 OSReport                # printf-like; saves f1-f8 when cr1[6] is set (varargs)
+80028288 OSDefaultExceptionHandler  # in the OS exception table for unhandled exceptions
+800098EC VMInstallDsiVector      # patches 0x80000300 with the stub at 0x800098A8, pager -> 0x80095D00
+80009AE4 VMInstallIsiVector      # same for 0x80000400, stub at 0x80009AA0, pager -> 0x80095D04
+800097AC VMDsiEntry              # builds a context frame on the stack, calls pager(2, frame), rfi
+800099A4 VMIsiEntry              # same for ISI: pager(3, frame)
+80008554 VMDsiPager              # passed to VMInstallDsiVector
+80008720 VMIsiPager              # passed to VMInstallIsiVector
+80008BF0 VMInit                  # SDR1, segment 7, page table, handlers
+80006A40 main
+# MusyX (identified against the MusyX decomp, MUSY_VERSION <= 2.0.0: its DSP ucode is byte-identical)
+8001D9EC salBuildCommandList   # nsDelay < 200 -> 10430 cycles; (nsDelay - 200) * busClock/400/5000 + 10430
+8002FEA4 MTXPerspective        # SDK (f1 fovY degrees, f2 aspect, f3 near, f4 far -> r3): the HUD's cameras (radar globe: callers 0x7FCD22C4, 0x7FCD4F60, 0x7FCD50F4, fov 100.4) pass the aspect their camera objects copied when created
+800269C0 salCallback           # AI DMA callback (hw_dolphin.c): index++, AIInitDMA 0x8004156C, OSGetTick -> salLastTick r13-18364;
+                               # salDspIsDone r13-18376 (0x800965D8), salLogicIsWaiting r13-18372 (0x800965DC),
+                               # salLogicActive r13-18368 (0x800965E0), userCallback r13-18384, salAIBufferBase r13-18380 (0x800965D4),
+                               # salAIBufferIndex (byte) r13-18348; found as the caller chain of salBuildCommandList (salCtrlDsp 0x80026CB4)
+80026A74 dspResumeCallback     # salDspIsDone = 1; runs the waiting user callback
+80026CB4 salCtrlDsp            # salBuildCommandList + mails 0xBABE0000|size and the list
+# Game (VM image), identified by reading its code
+7FD46244 GameFrameDelta          # returns 1/(59.94 - lost fps) (f1); stored per frame at 0x7FDE8288 by 0x7FC02CF0
+7FC397D4 WeaponTrigger           # (weapon r3, input r4): fire button (input+0xDC mask): tap -> 1 (WeaponUpdate 0x7FC39F24 fires), hold 0.3 s -> hold mode (vt+0x70/+0x78), release after 1.3 s -> 2; weapon+0xC locks, +0x51C allows hold. (Was taken for the camera button: it is the weapons')
+7FD7648C LoseLife                # lives byte 0x800962EE (r13-0x4AB2, 3 at mission start): 1 -> game over (0x800962EF = 0x21, mode 6), else -1, returns 1
+7FC45AFC PlayerDeathCheck        # [0x7FDEFE14] (player craft) state +0x370 == 2 -> LoseLife, deaths stat 0x7FDF0510
+7FC14CEC CameraSetup             # (camera view r3 = camera object+0xA4, matrix r4, aspect f1, fovY f2 degrees): aspect +0x12C, fovY +0x134, derived horizontal fov +0x130, near/far +0x124/+0x128, view matrix, culling frustum vectors from +0x138; 0x7FC153C0 then builds the projection from +0x134/+0x12C/+0x124/+0x128 (0x7FD43668 -> MTXPerspective). Aspect and fov come from the current camera object (0x7FC1CE38) +0x274/+0x270
+7FC39F24 WeaponUpdate            # (weapon r3, craft r4): WeaponTrigger, then fires, taking one from the count (+0; -1 = unlimited); found by watching the X-wing's torpedo count (craft+0xC74) drop
+7FC396D4 WeaponInit              # (weapon r3, craft r4, slot r5): count +0 = max +4 = ammo from the craft's data ([craft+0x37C] + slot*4 + 0x14C), slot +0x520; found by watching the X-wing's torpedo count (craft+0xC74) being set at spawn
+7FC3E528 CraftDestroy            # craft vtable slot (shared base method): starts the explosion (state +0x370 = 1); 0x7FC3F538 = dead (2)
+7FC14B8C CameraProjection        # (view r3, out r4 = view+0xA4, r5 = view+0xE4): the camera's own 4x4 perspective from its aspect +0x12C, fovY +0x134, near/far +0x124/+0x128 (+0xE4 derived from it); called by CameraSetup; the game projects points with it (engine glows, the targeting computer's screen corners)
+7FC6BD1C ReticleLoad             # the flight reticle object (r3): its four textures by name from the table 0x7FDC89D4 (hud_cross_l, hud_cross_s, hud_cross_ll, hud_cross_rl: rings and side lines, I8) into texture objects from +0x0C; found from the names (issue #10)
+7FC6BFA8 ReticleDraw             # (reticle r3) draws it: GXSetCurrentMtx(GX_IDENTITY), MTXOrtho 0x8002FF74 (identity, -1..1) + GXSetProjection, then 2D quads at the aim point projected with the camera (+0x04 and +0x08 are eased each frame)
+7FCD5D08 TargetingRect           # targeting computer (cockpit, Y): projects the screen's four corners (view +0x74, then +0xA4) to 640x480 screen units at 0x7FDF7CD8+0x100..0x12C, clamped to the EFB copy box +0x130..+0x136
+7FCD6AC0 TargetingDraw           # draws the targeting computer's orange screen (TEV color 0xB445105A at r13-0x6F08) as a 2D quad through the gather pipe from those corners; called from 0x7FCD7D28 (per-pass targeting computer frame)
+7FCD7D28 TargetingPass           # (pass r3 = 0..4) the targeting computer's part of a frame pass: TargetingRect, EFB copies of its screen area (GXSetTexCopySrc from 0x7FDF7CD8+0x130..0x136), the screen quad (TargetingDraw or 0x7FCD6FD4), the targets' TEV setup 0x7FCD62A0
+800070C4 HeapAlloc               # (size r3, flags r4) the game's heap: 32-byte block headers (+0x0 next, +0x4 prev, +0x8 block size, +0x10 data size); found reading a crash in HeapFree
+80007270 HeapFree                # (ptr r3): reads the header at ptr-0x20 (a corrupted one crashed here)
+80006CD0 HeapAllocFrom           # (heap record r3: MEM1 0x80068088 / VM 0x800680A4, size r4 rounded to 32, report r5): OSAllocFromHeap 0x80028AC4 on the record's OS heap (+0x18; VM first checks the pager's ARAM room 0x800094B0); a failure with report set prints "*** OUT OF MEMORY (size %d, free %d)! ***" (free: 0x80007338) and calls 0x800074F8(0, 3), returning 0. Only caller HeapAlloc: report = !(flags & 0x40000); HeapAlloc writes size/flags/record at block-0x10/-0xC/-0x8. Found reading HeapAlloc after the user's Kothlis crash
+7FD89210 TerrainSetup            # mission terrain (table 0x7FDF5A90): span array +0x120 = rows +0x11C (from the larger view distance) * 4 bytes, tile records [0x80095FA4] = [+4] * 12 bytes
+7FD89784 TerrainTeardown         # frees the terrain's buffers (mission end)
+7FCBAA0C TerrainSpans            # rasterizes the view footprint onto the terrain grid: one (left, right) s16 pair per row into [0x7FDF5BB0], as many rows as the footprint covers (no bound)
+7FCBA684 TerrainSpanEdge         # one edge of that footprint for TerrainSpans
+7FD56FD8 SceneSkipAllowed        # (scene id r3, r4, r5 for SceneSeen, f1/f2 times) the scene player's skip: game mode 5 (r13-19121, attract demo) -> A pressed; else scenes 13/23 always, others only if SceneSeen; then A pressed (isPressed 0x100), some ids at once, others once f1 > 2 and f2 > 1. Callers 0x7FD544B8, 0x7FD5540C, 0x7FD554DC (scene player). Found by R2_LOGFN on isPressed during a mission's second crawl (lr 0x7FD5706C)
+7FD56E5C SceneSeen               # (0, scene id, r5) nonzero if the scene was shown before this session; gates SceneSkipAllowed
+7FCBCCC4 TerrainDraw            # (view r3) per terrain patch ([0x7FDF5A90+0x24], stride 340, count +0x20; patch +0x30/+0x34 columns/rows, matrix +0x3C to grid units, 100 world units a cell in mission 1): moves the camera position and the four far-plane corners (view +0x138..+0x168) into the patch's grid (table +0x50), TerrainHull, then TerrainSpans and 0x7FCBC054 (draws the tiles); found from TerrainSpans' only caller, values read with R2_PEEK in the cockpit
+7FC92B7C TerrainRows             # (f1 view distance) grid rows a view footprint can span: ceil(the larger of two extents of a view 41 degrees to each side (r2-0x5CF0 = 0.7156 rad) at that distance / cell) + 2. TerrainSetup (0x7FD893BC) and HeightTerrainSetup (0x7FD8A304) size their span tables by it
+7FD8A240 HeightTerrainSetup      # heightmap terrain (Hoth; state 0x7FDF5E60): rows +0x240 = TerrainRows; ONE block (HeapAlloc at 0x7FD8A3C4: rows * 6 + n * 86) holds the span table +0x244 (s16 left, right per row), a second array +0x248 = base + rows * 4 and the 86-byte records after it, all laid out by rows
+7FCBD92C HeightTerrainSpans      # rasterizes the hull (TerrainHull into +0x1B0, top/bottom +0x228/+0x22C) into the span table +0x244: rows 0..+0x23C, the camera's row +0x234; no bound against +0x240
+7FCBE5F0 HeightTerrainWalk       # (terrain r3) walks the spans serpentine-wise over the u16 heightmap (+0x134, width +0x34, rows +0x36); a row ends when the column EQUALS its end (+0x264 / +0x260): an inverted span (left > right + 1) never ends and the pointer slides down through memory
+7FCBE108 HeightTerrainNextRow    # next row of that walk: row +0x250 += +0x258, start column, direction +0x25C, end +0x260
+7FD8AA18 HeightTerrainLists      # allocates the heightmap terrain's per-frame lists: material buckets +0xBC (HeapAlloc 0x900 at 0x7FD8AA3C: 6 bytes each, u16 head, tail) and the visible-tile list +0xC0 (HeapAlloc 0xC000 at 0x7FD8AA54, kept as base - 12: 4096 12-byte records, u16 indices from 1)
+7FCC0A00 HeightTerrainTiles      # (terrain r3, view r4) per frame: clears the buckets, appends every tile inside the spans to the +0xC0 list (no capacity check; +0 LOD level, +2 next, +4 column, +6 row, ...) chained per material, then draws each through the jump table 0x7FDCB5A8 by its level (0x7FCC068C, call at 0x7FCC09E0)
+7FC924B8 TerrainHull             # (5 points r3, hull out r4, r5) sorts the points and builds their convex hull in x/z (the view volume seen from above; y is height)
+7FC8DE3C CameraHFovAtan          # atan(clamp(f1, -1, 1)) through 0x8005348C (atanf); only caller CameraSetup (0x7FC14D30), which takes the horizontal fov +0x130 = 2 * this(aspect * tan(fovY/2)): at most 90 degrees. Found by reading +0x130 = pi/2 in the cockpit at 2.13:1 (R2_PEEK on the camera view)
+7FC464B0 StatsReset              # (stats r3 = 0x7FDF04F0) at a mission's start: +0x00/+0x04 shots fired, +0x0C hits, +0x10 enemies that appeared, +0x14 destroyed by the player, +0x18 friendlies, +0x1C friendlies lost, +0x20 lives lost, +0x24 time (s), +0x28/+0x2C targeting computer uses/seconds; +0x4C.. per-index records (-1)
+7FC46644 StatsAccuracy           # (stats, &shots, &hits) -> f1 = 100 * hits / shots
+7FC466CC StatsEnemies            # (stats, &appeared, &destroyed) -> f1 percent
+7FC46744 StatsFriendlies         # (stats, &friendlies, &lost) -> f1 percent kept
+7FC467C0 StatsTargeting          # (stats, &uses, &seconds) -> f1 targeting computer efficiency %
+7FC46840 StatsObjectDestroyed    # counts the player's kills (+0x14) and friendlies lost (+0x1C); found watching the stats while firing
+7FC468C8 StatsObjectAdded        # counts enemies (+0x10) and friendlies (+0x18) as they appear
+7FD76514 MissionResults          # (r3 unused, record r4): minutes f32 +0, destroyed u16 +4, accuracy % u16 +6, friendlies lost u16 +8, lives lost u32 +0xC, targeting computer % f32 +0x10; the results screen (0x7FD73DAC) and the medal (MedalRank) use it
+7FD345CC DitherStrength          # (renderer r3 = [r13-0x4BA0], 0x803B0A40) byte +0x1D4: the alpha of the TEV color (f_7FD2CB18(3, r, g, b, a)) with which the frame setup 0x7FD34A78 blends a screen-space dither texture over the picture; its texture matrix (0x7FD2AB48, mode word +0x1D8: 0 or 1 picks the pattern's aspect) maps 640 screen units to a 4-pixel period. Set by 0x7FD345D4 (1, 25 at boot from 0x7FD298C0; 1, 45 from 0x7FD29A60). Dolphin's "Disable Dithering" code (GSWE64.ini) zeroes +0x1D4 and +0x1D8. Found from that code's address and the setter's callers
+7FD765F4 MedalRank               # (results object r3, record r4): compares with the mission's 20-byte requirements ([r3+0x40], mission * 3 + tier - 2), best tier first; 5 = none
+7FD6910C CutsceneLogoDraw        # (object r3, pass r4) draw method of the cutscene model object (class "OBJcutsceneLogoObj", vtable 0x7FDE21FC): in pass 1, with a model (+0xC8) and alpha (+0xF4), draws it through 0x7FC11DDC with the object's matrix (+0x84) scaled by +0xE0 - e.g. the intro's LucasArts and Factor 5 logos
+7FD68C54 CutsceneVideoDraw       # (object r3, pass r4) draw method of the cutscene movie object (class "OBJcutsceneVideoObj", vtable 0x7FDE2270; movies "Rogue2/%s.movie": deathstarexplosion, PlntXpld, capitalship, ...): in pass 2, unless +0x112 or without +0x118 or a model (+0xC8), draws its quad (512x336 for most movies, textured with the movie's planes: I8 Y, two I8 at half size) through 0x7FC11DDC with the object's matrix (+0x84; scaled by +0xE0 except on the boot screen, id 22), sized to cover the game's own view with a margin. Found from the class strings and vtables, R2_LOGFN on 0x7FC11DDC in the Factor 5 intro (capital ship explosion: caller 0x7FD68CF0) and its GX dump
+80039120 DVDReadAsyncPrio        # (file r3, addr r4, len r5, offset r6, callback r7, prio r8): the SDK's, found from its "DVDReadAsync(): specified area is out of the file" string
+7FC94678 ScriptRun               # (trigger list r3, enabled-after-firing byte r4, r5, r6) mission script interpreter: triggers {u8 enabled, u8 conds, u8 actions, u8, u16 size words} + records {u8 op, u8 size words, args}; conditions 0-20 (table 0x7FDCA448), actions 0-84 (table 0x7FDCA2C4); see CLAUDE.md "Mission scripts". Found walking up from VoiceEnqueue's caller 0x7FC95DC8
+7FC96B0C ScriptRunPerFrame       # runs the registered per-frame trigger lists (12-byte entries at 0x7FDF4680, count byte r13-20124; registered by 0x7FC96AB8)
+7FD52650 VoiceEnqueue            # (voice entry r3 = script id - 1, r4, category r5): voice manager 0x7FE1C1D8 queue (16 entries of 8 bytes at +0x114, read/write index +0xEC/+0xED); drops categories on its block list (+0xEE count, +0xF0) and, in modes 0/4 with [0x7FE1CAF8] & 0x100, all but category 6; found with R2_LOGFN on DVDReadAsyncPrio during voice lines
+7FD52054 VoiceUpdate             # per frame: when the current line (+0x110) ends, starts the next queued one (0x7FD521EC -> 0x7FD5150C, which reads r2voice.vdy)
+7FC23008 AreaTriggerUpdate       # (object r3, position r4) after an object with a trigger list (+0x34) moves (the player's craft: 0x7FC36168): tests each area trigger record (class 0x1F: box +0x10 min, +0x28 size; +0x48 ignores height) and applies its enter / leave actions (+0x4C / +0x60, script via ScriptRun); see CLAUDE.md "Mission scripts". Found with R2_WATCH_BT on counter 15 when Prisons of the Maw's gate fired
+7FD02AAC MawShieldCoreUpdate     # (core r3) Prisons of the Maw's force field hexagon (class "OBJmawShieldCore", vtable 0x7FDD1CD0, slot +0x0C): for each of its generators (count +0xE0, level records +0xE4) flags +0x1F8 + i when the OBJmawShieldGen's +0x104 > 0 (disabled by ion cannons) and sets +0xFC (hexagon down) once fewer than count - 3 still run; fade byte +0x1FE. Found from the shield core pointer in a register at the user's crash into an open panel
+7FD02BE8 MawShieldCoreDraw       # (core r3, pass r4) vtable +0x14: in pass 1 draws panel i (centre +0xA8, generators i and i+1; display list +0x108 + 4i) only when neither generator is flagged at +0x1F8
+7FD02EC0 MawShieldCollide        # (ray start r3, direction r4, flags r5 (bit 2 needed), hit out r6, max f1) every hexagon from 0x80096054 (next +0x104) not down (+0xFC): every panel through MawShieldPanelHit, first hit returned (hit record: point, normal, distance, +0x58 the core's id); called through 0x7FD031DC, a pointer. Ignores the per-generator flags the draw uses
+7FD02CC0 MawShieldPanelHit       # (start r3, direction r4, centre r5, generator positions r6/r7, distances out r8-r10) ray vs. one force field triangle; only caller MawShieldCollide
+7FD588C0 SetUnlockFlag           # (progress r3 = 0x7FE1C4A0, mask r4, on r5) sets / clears bits of +0x658 (special features 0x1-0x40, their on/off 0x100/0x200, craft codes 0x400-0x40000 and 0x200000) and marks the block for saving (+0 = 1) unless the mask is only 0x200000. Found from the Special Features list (0x7FD70188) reading +0x658, then the stores to it
+7FD58914 SetCheatFlag            # (progress r3, mask r4, on r5) the same for +0x654 (0x1 all missions, 0x2 all tech upgrades, 0x8 infinite lives, 0x8000 black and white, 0x10000-0x100000 bonus missions, single upgrade levels); not saved for 0x8 / 0x8000
+7FD7F244 PasscodeHash            # (code r3, length r4) SHA-1 1000 times over a 1 KiB buffer (the code, zeros), each digest written back after the code; returns the 20-byte digest (0x7FE1E128) that the passcode screen (0x7FD6D4A0) looks up in its 71-entry table at 0x7FDE2350. Found from its SHA-1 constants; verified against known codes in Python
+7FD57FF0 UpgradeLevel            # (progress r3, pilot r4, upgrade r5 0-6) the pilot's tech upgrade level (pilot record +75 + upgrade) OR'd with the cheat words' levels (+0x654 bits by upgrade; 0x2 = 3 for all). Found reading +0x654's loads
+7FCB9544 CraftMask               # (mission r3, game mode r4 = [0x7FDE8258]) the craft a mission's hangar offers (bit per craft class): the craft code bits of +0x658 become a mask at r13-19980, then per-mission rules with the pilot's medals (AllMissionsMedal, MissionMedal). Found from the only reader of +0x658 bit 0x400 (a craft code's bit)
+7FCB9458 AllMissionsMedal        # (bonus too r3, level r4) every main (10) or every (17) mission's medal byte (pilot +12 + mission) at least r4 (missions 13/14 not counted); only the craft code calls it
+7FCB94E4 MissionMedal            # (mission r3, level r4) that mission's medal byte at least r4 (13/14: always); only the craft code calls it
+7FC90610 PSMTXConcat             # RL-NX (Stage 9): (ab r3, a r4, b r5) 3x4 concat in paired singles; unit constant {0, 1} at 0x800A8D10. Native in src/runtime/hle_mtx.cpp
+7FC8F9F0 PSMTXMultVec            # RL-NX (Stage 9): (dst r3, m r4, src r5) dst = m * (src, 1). Native in hle_mtx.cpp
+80055DA0 MovieFrame512           # RL-NX (Stage 10): (decoder ctx r3, Y r4, Cb r5, Cr r6) decodes a whole 512-wide .movie JPEG frame into GX I8 tiled planes (MCU rows through 0x80055F60; ctx from 0x8005481C: +0x0C frame start, +0x6C entropy start, +0x70/+0x72 SOF w/h). Native in src/runtime/hle_movie.cpp
+80055E30 MovieFrame640           # RL-NX (Stage 10): the same for 640-wide frames (IDCT 0x80057970). Native in hle_movie.cpp
+80055EC0 MovieFrameAny           # RL-NX (Stage 10): the same for other widths (r7 = width; IDCT 0x80059380). Native in hle_movie.cpp
+7FC904DC PSMTXInvRigid           # RL-NX (Stage 9): (dst r3, src r4) copy, transpose the 3x3, translation = -(R^T t). Native in hle_mtx.cpp

@@ -1,0 +1,264 @@
+diff --git a/lib/dolphin/gx/GXFrameBuffer.cpp b/lib/dolphin/gx/GXFrameBuffer.cpp
+--- a/lib/dolphin/gx/GXFrameBuffer.cpp
++++ b/lib/dolphin/gx/GXFrameBuffer.cpp
+@@ -29,11 +29,95 @@
+   const auto scaledHeight = std::max<u32>(static_cast<u32>(std::lround(static_cast<float>(logicalHeight) * scaleY)), 1);
+   return {scaledWidth, scaledHeight};
+ }
++
++// GX textures are stored in tiles: the texel rows of one row of tiles and its bytes, for a
++// texture `width` texels wide. False for formats without a fixed tiling here.
++bool tile_rows(u32 format, u32 width, u32& rows, u32& rowBytes) {
++  u32 tileW = 4, tileBytes = 32;
++  switch (format) {
++  case GX_TF_I4: case GX_TF_C4: case GX_TF_CMPR: case GX_CTF_R4: case GX_CTF_Z4:
++    tileW = 8, rows = 8;
++    break;
++  case GX_TF_I8: case GX_TF_IA4: case GX_TF_C8: case GX_CTF_RA4: case GX_CTF_A8: case GX_CTF_R8: case GX_CTF_G8:
++  case GX_CTF_B8: case GX_TF_Z8: case GX_CTF_Z8M: case GX_CTF_Z8L:
++    tileW = 8, rows = 4;
++    break;
++  case GX_TF_IA8: case GX_TF_RGB565: case GX_TF_RGB5A3: case GX_TF_C14X2: case GX_CTF_RA8: case GX_CTF_RG8:
++  case GX_CTF_GB8: case GX_TF_Z16: case GX_CTF_Z16L:
++    rows = 4;
++    break;
++  case GX_TF_RGBA8: case GX_TF_Z24X8:
++    rows = 4, tileBytes = 64;
++    break;
++  default:
++    return false;
++  }
++  rowBytes = (width + tileW - 1) / tileW * tileBytes;
++  return true;
++}
++
++// A texture copy whose destination lies inside an earlier copy's texture in memory (same format
++// and width, starting on one of its rows of tiles) writes those rows of it, as on hardware: the
++// copy only overwrites that part of the texture. Rogue Leader copies the EFB at half size for
++// the Maw prison's force field (a 320x240 refraction texture), then two 640x16 bands into its
++// first and last 8 rows; each band became a texture of its own at that address, and the field
++// sampled a 320x8 strip stretched over its whole surface.
++// Only copies made in the current frame count: an older one may be memory the game has reused.
++aurora::gx::GXState::CopyTextureRef* enclosing_copy(const void* dest, u32 width, u32 height, GXTexFmt format,
++                                                    u32& firstRow) {
++  u32 tileRows = 0, rowBytes = 0;
++  if (!tile_rows(format, width, tileRows, rowBytes) || rowBytes == 0) {
++    return nullptr;
++  }
++  const auto* d = static_cast<const u8*>(dest);
++  const uint64_t frame = aurora::gx::texture::frame_count();
++  aurora::gx::GXState::CopyTextureRef* best = nullptr;
++  for (auto& [addr, ref] : g_gxState.copyTextures) {
++    if (!ref || ref.frame != frame || ref.key.format != format || ref.width != width || ref.height <= height) {
++      continue;
++    }
++    const auto* base = static_cast<const u8*>(addr);
++    if (d < base) {
++      continue;
++    }
++    const size_t offset = static_cast<size_t>(d - base);
++    if (offset % rowBytes != 0) {
++      continue;
++    }
++    const size_t row = offset / rowBytes * tileRows;
++    if (row + height > ref.height || (best != nullptr && best->height >= ref.height)) {
++      continue;
++    }
++    best = &ref;
++    firstRow = static_cast<u32>(row);
++  }
++  return best;
++}
+ } // namespace
+ 
+ namespace aurora::gx {
+ void copy_tex(const void* dest, GXBool clear) noexcept {
+   const auto rect = map_logical_scissor(g_gxState.texCopySrc);
++  u32 firstRow = 0;
++  if (auto* outer = enclosing_copy(dest, g_gxState.texCopyDstWidth, g_gxState.texCopyDstHeight,
++                                   g_gxState.texCopyFmt, firstRow)) {
++    const auto& size = outer->handle->size;
++    const float scaleY = static_cast<float>(size.height) / static_cast<float>(outer->height);
++    const auto top = static_cast<int32_t>(std::lround(static_cast<float>(firstRow) * scaleY));
++    const auto bottom = static_cast<int32_t>(
++        std::lround(static_cast<float>(firstRow + g_gxState.texCopyDstHeight) * scaleY));
++    if (bottom > top) {
++      ++outer->revision;
++      const auto clearColor = clear && g_gxState.colorUpdate;
++      const auto clearAlpha = clear && g_gxState.alphaUpdate && efb_has_alpha(g_gxState.pixelFmt);
++      const auto clearDepth = clear && g_gxState.depthUpdate;
++      gfx::resolve_pass_into(outer->handle, rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor,
++                             clear_depth_value(), g_gxState.texCopyFmt, g_gxState.pixelFmt,
++                             {0, top, static_cast<int32_t>(size.width), bottom - top});
++      texture::invalidate_bindings();
++      return;
++    }
++  }
+   const auto [dstWidth, dstHeight] = scale_copy_dst(g_gxState.texCopyDstWidth, g_gxState.texCopyDstHeight);
+   const auto texCopyFmt = g_gxState.texCopyFmt;
+   const auto copy = texture::resolve_copy_texture({
+diff --git a/lib/gfx/encoding.cpp b/lib/gfx/encoding.cpp
+--- a/lib/gfx/encoding.cpp
++++ b/lib/gfx/encoding.cpp
+@@ -249,10 +249,13 @@
+   pass.End();
+ 
+   if (passInfo.resolveTarget) {
+-    const auto& dstSize = passInfo.resolveTarget->size;
++    const auto& dstRect = passInfo.resolveDstRect;
++    const bool partial = dstRect.width > 0 && dstRect.height > 0;
++    const auto dstWidth = partial ? static_cast<uint32_t>(dstRect.width) : passInfo.resolveTarget->size.width;
++    const auto dstHeight = partial ? static_cast<uint32_t>(dstRect.height) : passInfo.resolveTarget->size.height;
+     const bool needsConversion = tex_copy_conv::needs_conversion(passInfo.resolveFormat);
+-    const bool needsScaling = dstSize.width != static_cast<uint32_t>(passInfo.resolveRect.width) ||
+-                              dstSize.height != static_cast<uint32_t>(passInfo.resolveRect.height);
++    const bool needsScaling = dstWidth != static_cast<uint32_t>(passInfo.resolveRect.width) ||
++                              dstHeight != static_cast<uint32_t>(passInfo.resolveRect.height);
+     const bool isDepth = gx::is_depth_format(passInfo.resolveFormat);
+     if (isDepth && passInfo.msaaSamples > 1) {
+       Log.fatal("Depth tex copies from multisampled EFB targets are not supported");
+@@ -264,6 +267,7 @@
+         .uniformRange = passInfo.resolveUniformRange,
+         .dst = passInfo.resolveTarget,
+         .sampleFilter = needsScaling ? tex_copy_conv::SampleFilter::Linear : tex_copy_conv::SampleFilter::Nearest,
++        .dstRect = dstRect,
+     };
+     const bool needsOpaqueAlpha = !isDepth && !gx::efb_has_alpha(convReq.srcFmt);
+     const bool sameFormat =
+@@ -284,6 +288,11 @@
+       };
+       const wgpu::TexelCopyTextureInfo dst{
+           .texture = passInfo.resolveTarget->texture,
++          .origin =
++              wgpu::Origin3D{
++                  .x = partial ? static_cast<uint32_t>(dstRect.x) : 0,
++                  .y = partial ? static_cast<uint32_t>(dstRect.y) : 0,
++              },
+       };
+       const wgpu::Extent3D size{
+           .width = static_cast<uint32_t>(passInfo.resolveRect.width),
+diff --git a/lib/gfx/frame_packet.hpp b/lib/gfx/frame_packet.hpp
+--- a/lib/gfx/frame_packet.hpp
++++ b/lib/gfx/frame_packet.hpp
+@@ -95,6 +95,7 @@
+   GXTexFmt resolveFormat = GX_TF_RGBA8;
+   GXPixelFmt resolveSourceFormat = GX_PF_RGBA6_Z24;
+   ClipRect resolveRect;
++  ClipRect resolveDstRect{}; // part of resolveTarget written (width 0: all of it, cleared first)
+   Range resolveUniformRange;
+   wgpu::Texture snapshotColorDst;
+   wgpu::TextureView snapshotDepthDst;
+diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
+--- a/lib/gfx/recording.cpp
++++ b/lib/gfx/recording.cpp
+@@ -1082,11 +1082,12 @@
+ 
+ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
+                        Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat,
+-                       GXPixelFmt sourceFormat) {
++                       GXPixelFmt sourceFormat, ClipRect dstRect) {
+   // Resolve current render pass
+   auto& prevPass = current_render_passes()[g_recorder.currentRenderPass];
+   prevPass.resolveTarget = std::move(texture);
+   prevPass.resolveRect = rect;
++  prevPass.resolveDstRect = dstRect;
+   prevPass.resolveFormat = resolveFormat;
+   prevPass.resolveSourceFormat = sourceFormat;
+   const auto srcW = static_cast<float>(prevPass.colorAttachments[SceneColorAttachmentIndex].size.width);
+diff --git a/lib/gfx/recording.hpp b/lib/gfx/recording.hpp
+--- a/lib/gfx/recording.hpp
++++ b/lib/gfx/recording.hpp
+@@ -117,9 +117,11 @@
+ template <typename PipelineConfig>
+ PipelineRef pipeline_ref(const PipelineConfig& config);
+ 
++// dstRect: the part of the texture the copy lands in (width 0: the whole texture, which is
++// replaced; otherwise the rest of it keeps its contents)
+ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth,
+                        Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat,
+-                       GXPixelFmt sourceFormat);
++                       GXPixelFmt sourceFormat, ClipRect dstRect = {});
+ void copy_disp(ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth, Vec4<float> clearColorValue,
+                float clearDepthValue, int32_t dstY = 0, uint32_t xfbHeight = 0);
+ void clear_rect(ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth, Vec4<float> clearColorValue,
+diff --git a/lib/gfx/tex_copy_conv.cpp b/lib/gfx/tex_copy_conv.cpp
+--- a/lib/gfx/tex_copy_conv.cpp
++++ b/lib/gfx/tex_copy_conv.cpp
+@@ -665,10 +665,12 @@
+     bindGroup = g_device.CreateBindGroup(&bindGroupDescriptor);
+   }
+ 
++  // A copy into part of the texture (rows of an earlier copy) keeps the rest of it.
++  const bool partial = req.dstRect.width > 0 && req.dstRect.height > 0;
+   const std::array colorAttachments{
+       wgpu::RenderPassColorAttachment{
+           .view = req.dst->attachmentTextureView,
+-          .loadOp = wgpu::LoadOp::Clear,
++          .loadOp = partial ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear,
+           .storeOp = wgpu::StoreOp::Store,
+           .clearValue = {0.0, 0.0, 0.0, 0.0},
+       },
+@@ -680,6 +682,12 @@
+       .timestampWrites = webgpu::gpu_prof::pass_writes("EFB copy convert"),
+   };
+   const auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
++  if (partial) {
++    pass.SetViewport(static_cast<float>(req.dstRect.x), static_cast<float>(req.dstRect.y),
++                     static_cast<float>(req.dstRect.width), static_cast<float>(req.dstRect.height), 0.f, 1.f);
++    pass.SetScissorRect(static_cast<uint32_t>(req.dstRect.x), static_cast<uint32_t>(req.dstRect.y),
++                        static_cast<uint32_t>(req.dstRect.width), static_cast<uint32_t>(req.dstRect.height));
++  }
+   pass.SetPipeline(pipeline);
+   pass.SetBindGroup(0, bindGroup);
+   pass.Draw(3);
+diff --git a/lib/gfx/tex_copy_conv.hpp b/lib/gfx/tex_copy_conv.hpp
+--- a/lib/gfx/tex_copy_conv.hpp
++++ b/lib/gfx/tex_copy_conv.hpp
+@@ -28,6 +28,7 @@
+   Range uniformRange;        // Uniforms
+   TextureHandle dst;         // Destination texture
+   SampleFilter sampleFilter = SampleFilter::Nearest;
++  ClipRect dstRect{};        // part of dst written (width 0: all of it, cleared first)
+ };
+ 
+ bool needs_conversion(GXTexFmt fmt);
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -329,6 +329,7 @@
+     u32 width = 0;
+     u32 height = 0;
+     GXPixelFmt pixelFormat = GX_PF_RGB8_Z24;
++    uint64_t frame = 0; // texture::frame_count() when the whole texture was last copied
+ 
+     operator bool() const noexcept { return handle.operator bool(); }
+   };
+diff --git a/lib/gx/texture.cpp b/lib/gx/texture.cpp
+--- a/lib/gx/texture.cpp
++++ b/lib/gx/texture.cpp
+@@ -523,11 +523,14 @@
+   }
+   ++copy->revision;
+   current = *copy;
++  current.frame = s_frameCount;
+   update_cache_stats();
+   invalidate_bindings();
+   return current;
+ }
+ 
++uint64_t frame_count() noexcept { return s_frameCount; }
++
+ size_t texture_source_size(u32 format, u32 width, u32 height, u32 mipCount) noexcept {
+   if (width == 0 || height == 0 || mipCount == 0) {
+     return 0;
+diff --git a/lib/gx/texture.hpp b/lib/gx/texture.hpp
+--- a/lib/gx/texture.hpp
++++ b/lib/gx/texture.hpp
+@@ -40,6 +40,7 @@
+ size_t tlut_source_size(u16 numEntries) noexcept;
+ 
+ void invalidate_bindings() noexcept;
++uint64_t frame_count() noexcept; // frames ended so far (CopyTextureRef::frame)
+ uint64_t current_bind_generation() noexcept;
+ void invalidate_replacement(uint64_t replacementId) noexcept;
+ void end_frame() noexcept;

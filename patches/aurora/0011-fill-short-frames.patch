@@ -1,0 +1,25 @@
+diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
+index 0dcd2a6..928edff 100644
+--- a/lib/gfx/recording.cpp
++++ b/lib/gfx/recording.cpp
+@@ -703,14 +703,17 @@ void record_xfb_present(imgui::DrawData drawData, wgpu::BindGroup rmlBindGroup,
+   }
+ 
+   const bool resample = !rmlBindGroup || rmlOverlay;
+-  // Letterbox fill (AuroraSetLetterboxFill, widescreen): a composed XFB clearly shorter than the
+-  // logical frame buffer is presented at the frame buffer's full height.
++  // Letterbox fill (AuroraSetLetterboxFill, widescreen): a composed XFB shorter than the logical
++  // frame buffer is presented at the frame buffer's full height. Clearly letterboxed ones
++  // (cinematics) also get a taller framing (letterbox_factor); slightly short ones (e.g. 450
++  // of 480 lines, drawn with a 4:3 projection all the same) are just stretched, which also
++  // gives them their intended proportions.
+   float scaleY = 1.f;
+   const auto& gxs = gx::g_gxState;
+   if (gxs.letterboxFill && g_xfb.view && gxs.xfbHeight != 0) {
+     const float logicalHeight = static_cast<float>(gx::logical_fb_size().y);
+     const float lines = static_cast<float>(gxs.xfbHeight);
+-    if (lines < logicalHeight * 0.85f) {
++    if (lines < logicalHeight) {
+       scaleY = logicalHeight / lines;
+     }
+   }

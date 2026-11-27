@@ -1,0 +1,202 @@
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index 17ddae3..a556a3d 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -394,53 +394,68 @@ float letterbox_factor() noexcept {
+ }
+ 
+ struct ProjScale {
+-  float x = 1.f, y = 1.f, xOffset = 1.f, xAdd = 0.f;
++  float x = 1.f, y = 1.f, xOffset = 1.f, xAdd = 0.f, yAdd = 0.f;
+ };
+ 
++// The scales the scene's (centered) perspective projection got last: screen-position sprites
++// follow them.
++ProjScale sScenePersp;
++
++// A screen-position sprite: one additive quad in normalized device coordinates (identity
++// orthographic projection), e.g. the engine glows (Rogue Leader's red halos around ships'
++// engines) and lens flares a game places where its 3D projection puts a point. Its position
++// comes from the scene's projection, its size is laid out for 4:3. (Additive only: 2D pieces
++// laid out in 4:3 keep the usual treatment.)
++bool is_screen_sprite(GXPrimitive prim, u32 vtxCount) noexcept {
++  const auto& s = g_gxState;
++  const auto& p = s.proj;
++  return s.projType == GX_ORTHOGRAPHIC && prim == GX_QUADS && vtxCount == 4 && p.m0[0] == 1.f && p.m1[1] == 1.f &&
++         p.m0[3] == 0.f && p.m1[3] == 0.f && s.blendMode == GX_BM_BLEND && s.blendFacDst == GX_BL_ONE;
++}
++
+ // HUD anchoring: a piece whose center is this far out (NDC) and that stays on one side.
+ constexpr float HudAnchorCenter = 0.45f;
+ 
+ // Projection scales for a draw on a widened target (and in a letterboxed frame stretched to fill
+ // it). 3D keeps the framing the game had along the axis that fits and opens up the other: wider
+-// field of view on a wider target, taller for cinematics that are wider than the display. 2D keeps
+-// its logical shape, centered (HUD, menus, text), unless the draw spans the whole viewport width
+-// (backgrounds, fades, letterbox bars, render-to-texture passes), which stretches.
+-ProjScale widescreen_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxSize) noexcept {
+-  const float k = widescreen_factor();
+-  const float v = k == 1.f ? 1.f : letterbox_factor();
+-  if (k == 1.f && v == 1.f) {
+-    return {};
+-  }
+-  if (g_gxState.projType != GX_ORTHOGRAPHIC) {
+-    // A projection the game already made for the wider target (its own camera aspect widened,
+-    // so that it also culls for it) stays as it is. (Exactly the logical aspect times the
+-    // widening: other aspects, e.g. letterboxed cutscene cameras, are the game's own.)
+-    const float p0 = g_gxState.proj.m0[0], p2 = g_gxState.proj.m1[1];
+-    const auto [logicalWidth, logicalHeight] = logical_fb_size();
+-    const float logicalAspect = static_cast<float>(logicalWidth) / static_cast<float>(std::max(logicalHeight, 1u));
+-    // Its off-center shift (e.g. the HUD radar's camera, aimed at a corner) still follows the
+-    // 4:3 layout the rest of the HUD keeps.
+-    // HUD anchoring: a camera aimed off-center (its axis at x_ndc = -p1, the 4:3 layout) at a
+-    // side moves with the 2D HUD it belongs to.
+-    float xAdd = 0.f;
+-    if (g_gxState.hudAnchoring && p0 != 0.f) {
+-      const float center = -g_gxState.proj.m0[2];
+-      if (center > HudAnchorCenter) {
+-        xAdd = 1.f - 1.f / k;
+-      } else if (center < -HudAnchorCenter) {
+-        xAdd = 1.f / k - 1.f;
+-      }
+-    }
+-    if (p0 != 0.f && std::abs(std::abs(p2 / p0) / (logicalAspect * k) - 1.f) < 0.01f) {
+-      return {1.f, 1.f / v, 1.f / k, xAdd};
++// field of view on a wider target, taller for cinematics that are wider than the display.
++ProjScale perspective_scale(float k, float v) noexcept {
++  // A projection the game already made for the wider target (its own camera aspect widened,
++  // so that it also culls for it) stays as it is. (Exactly the logical aspect times the
++  // widening: other aspects, e.g. letterboxed cutscene cameras, are the game's own.)
++  const float p0 = g_gxState.proj.m0[0], p2 = g_gxState.proj.m1[1];
++  const auto [logicalWidth, logicalHeight] = logical_fb_size();
++  const float logicalAspect = static_cast<float>(logicalWidth) / static_cast<float>(std::max(logicalHeight, 1u));
++  // Its off-center shift (e.g. the HUD radar's camera, aimed at a corner) still follows the
++  // 4:3 layout the rest of the HUD keeps.
++  // HUD anchoring: a camera aimed off-center (its axis at x_ndc = -p1, the 4:3 layout) at a
++  // side moves with the 2D HUD it belongs to.
++  float xAdd = 0.f;
++  if (g_gxState.hudAnchoring && p0 != 0.f) {
++    const float center = -g_gxState.proj.m0[2];
++    if (center > HudAnchorCenter) {
++      xAdd = 1.f - 1.f / k;
++    } else if (center < -HudAnchorCenter) {
++      xAdd = 1.f / k - 1.f;
+     }
+-    // shown k times wider and v times taller than the game drew it for
+-    const float r = k / v;
+-    return r >= 1.f ? ProjScale{1.f / r, 1.f, 1.f, xAdd} : ProjScale{1.f, r, 1.f, xAdd};
+   }
++  if (p0 != 0.f && std::abs(std::abs(p2 / p0) / (logicalAspect * k) - 1.f) < 0.01f) {
++    return {1.f, 1.f / v, 1.f / k, xAdd};
++  }
++  // shown k times wider and v times taller than the game drew it for
++  const float r = k / v;
++  return r >= 1.f ? ProjScale{1.f / r, 1.f, 1.f, xAdd} : ProjScale{1.f, r, 1.f, xAdd};
++}
++
++// 2D keeps its logical shape, centered (HUD, menus, text), unless the draw spans the whole
++// viewport width (backgrounds, fades, letterbox bars, render-to-texture passes), which stretches.
++// A screen-position sprite keeps its 4:3 shape around its own center, and its center goes where
++// the scene's projection was moved: x' = x / k + cx (sx - 1 / k), likewise y with v.
++ProjScale ortho_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxSize, GXPrimitive prim, float k,
++                      float v) noexcept {
+   const auto& proj = g_gxState.proj;
+   const PosLayout layout = pos_layout(fmt);
+-  float minX = 1e30f, maxX = -1e30f;
++  float minX = 1e30f, maxX = -1e30f, minY = 1e30f, maxY = -1e30f;
+   for (u32 i = 0; i < vtxCount; ++i) {
+     Vec4<float> mv;
+     if (!vertex_mv_pos(layout, verts + i * vtxSize, mv)) {
+@@ -448,15 +463,23 @@ ProjScale widescreen_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxS
+     }
+     const float w = proj.m3[0] * mv[0] + proj.m3[1] * mv[1] + proj.m3[2] * mv[2] + proj.m3[3];
+     const float x = proj.m0[0] * mv[0] + proj.m0[1] * mv[1] + proj.m0[2] * mv[2] + proj.m0[3];
++    const float y = proj.m1[0] * mv[0] + proj.m1[1] * mv[1] + proj.m1[2] * mv[2] + proj.m1[3];
+     const float ndc = w != 0.f ? x / w : x;
++    const float ndcY = w != 0.f ? y / w : y;
+     minX = std::min(minX, ndc);
+     maxX = std::max(maxX, ndc);
++    minY = std::min(minY, ndcY);
++    maxY = std::max(maxY, ndcY);
+   }
+   if (minX <= -0.95f && maxX >= 0.95f) {
+     return {};
+   }
+-  // HUD anchoring: x_ndc' = (x_ndc +- 1) / k -+ 1 keeps the piece's distance to its edge
+   const float center = (minX + maxX) * 0.5f;
++  if (is_screen_sprite(prim, vtxCount)) {
++    const float cy = (minY + maxY) * 0.5f;
++    return {1.f / k, 1.f / v, 1.f, center * (sScenePersp.x - 1.f / k), cy * (sScenePersp.y - 1.f / v)};
++  }
++  // HUD anchoring: x_ndc' = (x_ndc +- 1) / k -+ 1 keeps the piece's distance to its edge
+   if (g_gxState.hudAnchoring && minX >= 0.f && center > HudAnchorCenter) {
+     return {1.f / k, 1.f / v, 1.f, 1.f - 1.f / k};
+   }
+@@ -466,6 +489,23 @@ ProjScale widescreen_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxS
+   return {1.f / k, 1.f / v};
+ }
+ 
++ProjScale widescreen_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxSize, GXPrimitive prim) noexcept {
++  const float k = widescreen_factor();
++  const float v = k == 1.f ? 1.f : letterbox_factor();
++  if (k == 1.f && v == 1.f) {
++    sScenePersp = {};
++    return {};
++  }
++  if (g_gxState.projType != GX_ORTHOGRAPHIC) {
++    const ProjScale ps = perspective_scale(k, v);
++    if (std::abs(g_gxState.proj.m0[2]) < 0.01f && std::abs(g_gxState.proj.m1[2]) < 0.01f) {
++      sScenePersp = ps;
++    }
++    return ps;
++  }
++  return ortho_scale(fmt, verts, vtxCount, vtxSize, prim, k, v);
++}
++
+ // The zfreeze reference: what the plane needs of the last triangle drawn without zfreeze, taken
+ // at that draw (state may change before a zfreeze draw comes, e.g. the matrix index) and turned
+ // into a plane only when one does - most frames have none.
+@@ -871,15 +911,18 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader&
+   const u8* verts = reader.data() + reader.offset();
+   // A draw with nothing changed since the previous one (glyphs of a text, pieces of an element)
+   // keeps its widescreen scales: no per-draw work, and an element moves as one.
+-  const bool unchanged = g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt;
++  // (Screen-position sprites each have their own center: always.)
++  const bool unchanged =
++      g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt && !is_screen_sprite(static_cast<GXPrimitive>(prim), vtxCount);
+   if (!unchanged) {
+-    if (const auto ps = widescreen_scale(fmt, verts, vtxCount, vtxSize);
++    if (const auto ps = widescreen_scale(fmt, verts, vtxCount, vtxSize, static_cast<GXPrimitive>(prim));
+         ps.x != g_gxState.projXScale || ps.y != g_gxState.projYScale || ps.xOffset != g_gxState.projXOffsetScale ||
+-        ps.xAdd != g_gxState.projXAdd) {
++        ps.xAdd != g_gxState.projXAdd || ps.yAdd != g_gxState.projYAdd) {
+       g_gxState.projXScale = ps.x;
+       g_gxState.projYScale = ps.y;
+       g_gxState.projXOffsetScale = ps.xOffset;
+       g_gxState.projXAdd = ps.xAdd;
++      g_gxState.projYAdd = ps.yAdd;
+       g_gxState.dirty |= DirtyUniform;
+     }
+   }
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index 0e9c2b1..bba0767 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -389,6 +389,7 @@ struct GXState {
+   float projYScale = 1.f;
+   float projXOffsetScale = 1.f; // perspective x offset (row 0, z column) only, on top of projXScale
+   float projXAdd = 0.f;         // NDC shift (HUD anchored to a screen edge), after the scales
++  float projYAdd = 0.f;         // NDC shift in y (screen-position sprites), after the scales
+   // Widescreen HUD: 2D pieces clearly on one side move to that edge (AuroraSetHudAnchoring).
+   bool hudAnchoring = false;
+   // Widescreen: letterboxed frames (XFB much shorter than the logical frame buffer, e.g. 304
+@@ -471,6 +472,9 @@ inline void apply_widescreen_scale(Mat4x4<float>& proj) noexcept {
+     const float y = s.projYScale;
+     proj.m1 = proj.m1 * Vec4{y, y, y, y};
+   }
++  if (s.projYAdd != 0.f) {
++    proj.m1 = proj.m1 + proj.m3 * Vec4{s.projYAdd, s.projYAdd, s.projYAdd, s.projYAdd};
++  }
+ }struct ShaderInfo;
+ 
+ void initialize() noexcept;

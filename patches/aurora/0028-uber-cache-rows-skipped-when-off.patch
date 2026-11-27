@@ -1,0 +1,17 @@
+diff --git a/lib/gfx/pipeline_cache.cpp b/lib/gfx/pipeline_cache.cpp
+index 0a60297..c9f0520 100644
+--- a/lib/gfx/pipeline_cache.cpp
++++ b/lib/gfx/pipeline_cache.cpp
+@@ -1034,6 +1034,12 @@ static size_t load_pipeline_cache_entries(ShaderType type, uint32_t configVersio
+     if constexpr (std::is_same_v<PipelineConfig, gx::PipelineConfig>) {
+       // rows stored before normalization: the same shaders under the keys draws now use
+       gx::normalize_pipeline_config(config);
++      // ubershaders off (AuroraSetUberShaders(0) before initializing): the uber pipelines stored
++      // while they were on are not built either - each is derived again from the cached configs
++      // below once they are back on, so the rows are only skipped, not lost
++      if (gx::g_uberMode == gx::UberMode::Off && gx::is_uber_config(config)) {
++        continue;
++      }
+       // and each one's uber pipeline (its fixed-function state), built with the rest at startup
+       if (gx::g_uberMode != gx::UberMode::Off && !gx::is_uber_config(config)) {
+         remember_pipeline_config(type, gx::uber_pipeline_config(config), firstFrameUsed, false);

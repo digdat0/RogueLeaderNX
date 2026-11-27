@@ -1,0 +1,4 @@
+// Windows resources: the program icon (CMake's R2_ICON: your own res/icon.ico when it exists,
+// else res/red_two.ico). Resource id 1 is the first icon group, which Explorer shows; the window
+// uses it too (SDL_HINT_WINDOWS_INTRESOURCE_ICON, gfx/gx_bridge.cpp).
+1 ICON "@_r2_icon@"

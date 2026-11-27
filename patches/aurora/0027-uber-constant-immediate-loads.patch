@@ -1,0 +1,24 @@
+diff --git a/lib/gx/uber.cpp b/lib/gx/uber.cpp
+index 88701f1..9e2148b 100644
+--- a/lib/gx/uber.cpp
++++ b/lib/gx/uber.cpp
+@@ -193,11 +193,16 @@ fn attr_word(a: u32) -> u32 {
+     return ubuf.attrs[a / 4u][a % 4u];
+ }
+ 
++// The immediates are read whole at constant offsets and the component picked in registers:
++// indexing a vec4 of the immediate block with a run-time index makes a push constant load with
++// a dynamic offset, and the Mesa 26.2 development RADV that stable SteamOS 3.8.28 ships
++// (vulkan-radeon 26.2.0_devel) took a garbage push constant size from it: the first draw with an
++// uber pipeline copied gigabytes in radv_upload_push_constants and crashed (Mesa 25.2.8: fine).
+ fn array_start(a: u32) -> u32 {
+     let i = a - 9u;
+-    if (i < 4u) { return imm.array_start0[i]; }
+-    if (i < 8u) { return imm.array_start1[i - 4u]; }
+-    return imm.array_start2[i - 8u];
++    let v = select(select(imm.array_start2, imm.array_start1, i < 8u), imm.array_start0, i < 4u);
++    let c = i & 3u;
++    return select(select(select(v.w, v.z, c == 2u), v.y, c == 1u), v.x, c == 0u);
+ }
+ 
+ // Byte offset of attribute a of vertex v: in abuf when indexed, in vbuf when direct.

@@ -1,0 +1,158 @@
+diff --git a/include/dolphin/gx/GXAurora.h b/include/dolphin/gx/GXAurora.h
+index 780a9b4..a143fff 100644
+--- a/include/dolphin/gx/GXAurora.h
++++ b/include/dolphin/gx/GXAurora.h
+@@ -108,6 +108,19 @@ extern "C" {
+  */
+ #define GX_AURORA_SET_SCREEN_SPACE_2D 0x003D
+ 
++/**
++ * The draws that follow fill the target where they cover most of it but stop short of its
++ * edges (e.g. a full-screen movie a game places in its 3D scene, sized for 4:3): along each
++ * axis an edge inside the target moves out to the target's edge, the draw stretched in
++ * between; edges already past it stay. Draws covering less than half of the target either way,
++ * or reaching behind the camera, are left alone. Followed by:
++ *   u8  1 = on, 0 = off (the default)
++ *   f32 x, f32 y: a shift (NDC) the projection carries that is not the frame's, e.g. a scissor
++ *       box offset folded into it to render part of the frame; the frame's edges are where
++ *       they are without it
++ */
++#define GX_AURORA_SET_FILL_SCREEN 0x003E
++
+ /**
+  * Draw primitives with the vertex count derived from a byte length, as written by
+  * GXBegin(prim, fmt, GX_AUTO). Must be followed by a u8 draw opcode (vtxfmt|prim),
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index 0946036..402b3c0 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -439,11 +439,17 @@ ProjScale perspective_scale(float k, float v) noexcept {
+       xAdd = 1.f / k - 1.f;
+     }
+   }
+-  if (p0 != 0.f && std::abs(std::abs(p2 / p0) / (logicalAspect * k) - 1.f) < 0.01f) {
++  // A letterboxed frame's own camera: the logical aspect times the letterbox stretch (4:3 *
++  // 480/304 = 2.105 for 304-line cinematics). It is the game's, also on a display of about that
++  // aspect: a 2.12:1 window passed the 1% test below and such frames were squeezed by 1 / v
++  // (cards and movies stopped short of the top and bottom).
++  const bool letterboxCamera =
++      v > 1.f && p0 != 0.f && std::abs(std::abs(p2 / p0) / (logicalAspect * v) - 1.f) < 0.002f;
++  if (!letterboxCamera && p0 != 0.f && std::abs(std::abs(p2 / p0) / (logicalAspect * k) - 1.f) < 0.01f) {
+     return {1.f, 1.f / v, 1.f / k, xAdd};
+   }
+   // others the game widened itself (AuroraSetWidenedAspects)
+-  for (u32 i = 0; p0 != 0.f && i < g_gxState.widenedAspectCount; ++i) {
++  for (u32 i = 0; !letterboxCamera && p0 != 0.f && i < g_gxState.widenedAspectCount; ++i) {
+     if (std::abs(std::abs(p2 / p0) / g_gxState.widenedAspects[i] - 1.f) < 0.002f) {
+       return {1.f, 1.f / v, 1.f / k, xAdd};
+     }
+@@ -515,6 +521,55 @@ ProjScale widescreen_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxS
+   return ortho_scale(fmt, verts, vtxCount, vtxSize, prim, k, v);
+ }
+ 
++// GX_AURORA_SET_FILL_SCREEN: the draw's extent on the target (NDC with the scales in ps, less the
++// shift its projection carries for part of the frame) and, if it covers most of the target but
++// an edge stops inside it, scales on top of ps that move that edge out: along each axis
++// [a, b] -> [min(a, -1), max(b, 1)].
++ProjScale fill_screen_scale(ProjScale ps, GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxSize) noexcept {
++  const auto& s = g_gxState;
++  // the x and y rows as apply_widescreen_scale leaves them
++  const Vec4<float> m0 = s.proj.m0 * Vec4{ps.x, ps.x, ps.x * ps.xOffset, ps.x} +
++                         s.proj.m3 * Vec4{ps.xAdd, ps.xAdd, ps.xAdd, ps.xAdd};
++  const Vec4<float> m1 = s.proj.m1 * Vec4{ps.y, ps.y, ps.y, ps.y} + s.proj.m3 * Vec4{ps.yAdd, ps.yAdd, ps.yAdd, ps.yAdd};
++  // the carried shift as the scales moved it (perspective: it sits in the z column)
++  const float shiftX = s.fillShiftX * ps.x * (s.projType == GX_ORTHOGRAPHIC ? 1.f : ps.xOffset);
++  const float shiftY = s.fillShiftY * ps.y;
++  const PosLayout layout = pos_layout(fmt);
++  float minX = 1e30f, maxX = -1e30f, minY = 1e30f, maxY = -1e30f;
++  for (u32 i = 0; i < vtxCount; ++i) {
++    Vec4<float> mv;
++    if (!vertex_mv_pos(layout, verts + i * vtxSize, mv)) {
++      return ps;
++    }
++    const auto dot = [&mv](const Vec4<float>& r) { return r[0] * mv[0] + r[1] * mv[1] + r[2] * mv[2] + r[3] * mv[3]; };
++    const float w = dot(s.proj.m3);
++    if (w <= 1e-6f) {
++      return ps; // reaches behind the camera
++    }
++    const float x = dot(m0) / w - shiftX, y = dot(m1) / w - shiftY;
++    minX = std::min(minX, x);
++    maxX = std::max(maxX, x);
++    minY = std::min(minY, y);
++    maxY = std::max(maxY, y);
++  }
++  if (maxX - minX < 1.f || maxY - minY < 1.f || maxX <= -1.f || minX >= 1.f || maxY <= -1.f || minY >= 1.f) {
++    return ps; // not most of the target
++  }
++  // ndc' = f * (ndc - shift) + t + shift, on top of the scales so far
++  const auto fit = [](float a, float b, float shift, float& scale, float& add) {
++    const float a2 = std::min(a, -1.f), b2 = std::max(b, 1.f);
++    if (a2 == a && b2 == b) {
++      return;
++    }
++    const float f = (b2 - a2) / (b - a), t = a2 - f * a;
++    scale *= f;
++    add = add * f + t + shift - f * shift;
++  };
++  fit(minX, maxX, shiftX, ps.x, ps.xAdd);
++  fit(minY, maxY, shiftY, ps.y, ps.yAdd);
++  return ps;
++}
++
+ // The zfreeze reference: what the plane needs of the last triangle drawn without zfreeze, taken
+ // at that draw (state may change before a zfreeze draw comes, e.g. the matrix index) and turned
+ // into a plane only when one does - most frames have none.
+@@ -920,12 +975,16 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader&
+   const u8* verts = reader.data() + reader.offset();
+   // A draw with nothing changed since the previous one (glyphs of a text, pieces of an element)
+   // keeps its widescreen scales: no per-draw work, and an element moves as one.
+-  // (Screen-position sprites each have their own center: always.)
+-  const bool unchanged =
+-      g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt && !is_screen_sprite(static_cast<GXPrimitive>(prim), vtxCount);
++  // (Screen-position sprites each have their own center, draws filling the screen their own
++  // extent: always.)
++  const bool unchanged = g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt && !g_gxState.fillScreen &&
++                         !is_screen_sprite(static_cast<GXPrimitive>(prim), vtxCount);
+   if (!unchanged) {
+-    if (const auto ps = widescreen_scale(fmt, verts, vtxCount, vtxSize, static_cast<GXPrimitive>(prim));
+-        ps.x != g_gxState.projXScale || ps.y != g_gxState.projYScale || ps.xOffset != g_gxState.projXOffsetScale ||
++    auto ps = widescreen_scale(fmt, verts, vtxCount, vtxSize, static_cast<GXPrimitive>(prim));
++    if (g_gxState.fillScreen) {
++      ps = fill_screen_scale(ps, fmt, verts, vtxCount, vtxSize);
++    }
++    if (ps.x != g_gxState.projXScale || ps.y != g_gxState.projYScale || ps.xOffset != g_gxState.projXOffsetScale ||
+         ps.xAdd != g_gxState.projXAdd || ps.yAdd != g_gxState.projYAdd) {
+       g_gxState.projXScale = ps.x;
+       g_gxState.projYScale = ps.y;
+@@ -1176,6 +1235,16 @@ void handle_aurora(ByteReader& reader) noexcept {
+       g_gxState.screenSpace2D = on;
+       g_gxState.dirty |= DirtyUniform; // (the next draw decides its widescreen scales again)
+     }
++  } else if (subCmd == GX_AURORA_SET_FILL_SCREEN) {
++    const bool on = reader.read<u8>() != 0;
++    const f32 shiftX = reader.read<f32>();
++    const f32 shiftY = reader.read<f32>();
++    if (on != g_gxState.fillScreen || shiftX != g_gxState.fillShiftX || shiftY != g_gxState.fillShiftY) {
++      g_gxState.fillScreen = on;
++      g_gxState.fillShiftX = shiftX;
++      g_gxState.fillShiftY = shiftY;
++      g_gxState.dirty |= DirtyUniform; // (the next draw decides its scales again)
++    }
+   } else if (subCmd == GX_AURORA_READBACK_CAPTURE_PEEKS) {
+     readback::handle_capture_peeks(reader);
+   } else if (subCmd == GX_AURORA_READBACK_CAPTURE_COPIES) {
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index 536eda5..b7126e3 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -394,6 +394,10 @@ struct GXState {
+   bool hudAnchoring = false;
+   // GX_AURORA_SET_SCREEN_SPACE_2D: orthographic draws in the target's own screen space
+   bool screenSpace2D = false;
++  // GX_AURORA_SET_FILL_SCREEN: draws stretched out to the target's edges, and the NDC shift
++  // their projection carries
++  bool fillScreen = false;
++  float fillShiftX = 0.f, fillShiftY = 0.f;
+   // AuroraSetWidenedAspects: perspective aspects the game already widened for the target
+   std::array<float, 8> widenedAspects{};
+   u32 widenedAspectCount = 0;

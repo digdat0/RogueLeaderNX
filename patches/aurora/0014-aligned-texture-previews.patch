@@ -1,0 +1,16 @@
+diff --git a/lib/gfx/dds_io.cpp b/lib/gfx/dds_io.cpp
+index 810c79e..ef38713 100644
+--- a/lib/gfx/dds_io.cpp
++++ b/lib/gfx/dds_io.cpp
+@@ -270,6 +270,11 @@ std::optional<uint32_t> mip_tail_start(const ParsedDDS& dds, uint32_t maxDimensi
+     const uint32_t width = std::max(dds.width >> mip, 1u);
+     const uint32_t height = std::max(dds.height >> mip, 1u);
+     if (width <= maxDimension && height <= maxDimension) {
++      // The tail becomes a texture of its own: its first level must be whole blocks (BCn: 4x4),
++      // else no preview (the full texture still loads).
++      if (!is_block_aligned(dds.format, width, height)) {
++        return std::nullopt;
++      }
+       return mip;
+     }
+   }

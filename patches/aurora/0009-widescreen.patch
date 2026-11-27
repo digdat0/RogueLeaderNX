@@ -1,0 +1,401 @@
+diff --git a/include/dolphin/gx/GXAurora.h b/include/dolphin/gx/GXAurora.h
+index 962d392..df8e7e0 100644
+--- a/include/dolphin/gx/GXAurora.h
++++ b/include/dolphin/gx/GXAurora.h
+@@ -194,6 +194,22 @@ typedef enum _AuroraViewportPolicy {
+  */
+ void AuroraSetViewportPolicy(AuroraViewportPolicy policy);
+ 
++/**
++ * Widescreen: the content framebuffer gets this display aspect (width / height) instead of the
++ * logical one (0 = off, < 0 = the window's aspect). Perspective projections are widened to it;
++ * orthographic draws keep their logical aspect, centered, unless they span the whole viewport
++ * width (backgrounds, fades, letterbox bars), which stretch to it.
++ */
++void AuroraSetDisplayAspect(float aspect);
++
++/**
++ * With a display aspect set: frames scanned out with fewer lines than the logical frame buffer
++ * (letterboxed cinematics) fill the screen instead: presented stretched to the full height, with
++ * their 3D framing opened up (vertically, or horizontally if the display is wider still) and their
++ * 2D squeezed to keep its shape.
++ */
++void AuroraSetLetterboxFill(bool fill);
++
+ /**
+  * Retrieves the current content framebuffer size.
+  */
+diff --git a/lib/dolphin/gx/GXAurora.cpp b/lib/dolphin/gx/GXAurora.cpp
+index 6cfb354..a274971 100644
+--- a/lib/dolphin/gx/GXAurora.cpp
++++ b/lib/dolphin/gx/GXAurora.cpp
+@@ -36,6 +36,10 @@ void GXInsertDebugMarker(const char* label) {
+ 
+ void AuroraSetViewportPolicy(AuroraViewportPolicy policy) { aurora::gx::set_viewport_policy(policy); }
+ 
++void AuroraSetDisplayAspect(float aspect) { aurora::window::set_frame_buffer_display_aspect(aspect); }
++
++void AuroraSetLetterboxFill(bool fill) { g_gxState.letterboxFill = fill; }
++
+ void AuroraGetRenderSize(u32* width, u32* height) {
+   const auto windowSize = aurora::window::get_window_size();
+   if (width != nullptr) {
+diff --git a/lib/gfx/efb.cpp b/lib/gfx/efb.cpp
+index 6764311..d5fe3cf 100644
+--- a/lib/gfx/efb.cpp
++++ b/lib/gfx/efb.cpp
+@@ -16,6 +16,7 @@ AuroraWindowSize g_displaySize{};
+ std::optional<State> g_applied;
+ float g_scale = 0.f;
+ bool g_aspectFit = false;
++float g_displayAspect = 0.f;
+ 
+ uint32_t extent(double value) {
+   return static_cast<uint32_t>(std::clamp(std::round(value), 1.0, static_cast<double>(UINT32_MAX)));
+@@ -35,7 +36,7 @@ AuroraWindowSize display_size(uint32_t width, uint32_t height, float scale) {
+ } // namespace
+ 
+ AuroraWindowSize calculate_size(AuroraWindowSize size, uint32_t baseWidth, uint32_t baseHeight,
+-                                float frameBufferScale, bool aspectFit) noexcept {
++                                float frameBufferScale, bool aspectFit, float displayAspect) noexcept {
+   baseWidth = std::max(1u, baseWidth);
+   baseHeight = std::max(1u, baseHeight);
+   if (!std::isfinite(size.scale) || size.scale <= 0.f) {
+@@ -53,6 +54,24 @@ AuroraWindowSize calculate_size(AuroraWindowSize size, uint32_t baseWidth, uint3
+   const double baseAspect = static_cast<double>(baseWidth) / baseHeight;
+   const double nativeAspect = static_cast<double>(nativeWidth) / nativeHeight;
+ 
++  if (displayAspect != 0.f && std::isfinite(displayAspect)) {
++    // Display aspect override (widescreen): > 0 a fixed aspect, letterboxed in the window;
++    // < 0 the window's own aspect. The height follows the scale (or the window), the width the
++    // aspect.
++    const double aspect = displayAspect > 0.f ? static_cast<double>(displayAspect) : nativeAspect;
++    if (std::isfinite(frameBufferScale) && frameBufferScale > 0.f) {
++      size.fb_height = extent(baseHeight * static_cast<double>(frameBufferScale));
++      size.fb_width = extent(size.fb_height * aspect);
++    } else if (nativeAspect > aspect) {
++      size.fb_height = nativeHeight;
++      size.fb_width = extent(nativeHeight * aspect);
++    } else {
++      size.fb_width = nativeWidth;
++      size.fb_height = extent(nativeWidth / aspect);
++    }
++    return size;
++  }
++
+   if (std::isfinite(frameBufferScale) && frameBufferScale > 0.f) {
+     size.fb_width = extent(baseWidth * static_cast<double>(frameBufferScale));
+     size.fb_height = extent(baseHeight * static_cast<double>(frameBufferScale));
+@@ -107,6 +126,17 @@ bool set_scale(float scale) {
+   return true;
+ }
+ 
++bool set_display_aspect(float aspect) {
++  std::lock_guard lock{g_configMutex};
++  aspect = std::isfinite(aspect) ? aspect : 0.f;
++  if (g_displayAspect == aspect) {
++    return false;
++  }
++
++  g_displayAspect = aspect;
++  return true;
++}
++
+ bool set_aspect_fit(bool fit) {
+   std::lock_guard lock{g_configMutex};
+   if (g_aspectFit == fit) {
+@@ -120,7 +150,7 @@ bool set_aspect_fit(bool fit) {
+ AuroraWindowSize resolve_size(AuroraWindowSize size) {
+   const auto [baseWidth, baseHeight] = vi::configured_fb_size();
+   std::lock_guard lock{g_configMutex};
+-  return calculate_size(size, baseWidth, baseHeight, g_scale, g_aspectFit);
++  return calculate_size(size, baseWidth, baseHeight, g_scale, g_aspectFit, g_displayAspect);
+ }
+ 
+ AuroraWindowSize pending_size() {
+@@ -137,7 +167,7 @@ AuroraWindowSize pending_size() {
+     }
+   }
+ 
+-  return calculate_size(size, baseWidth, baseHeight, g_scale, g_aspectFit);
++  return calculate_size(size, baseWidth, baseHeight, g_scale, g_aspectFit, g_displayAspect);
+ }
+ 
+ AuroraWindowSize applied_size() {
+@@ -177,7 +207,7 @@ State prepare_frame(bool commit) {
+         size.native_fb_height = baseHeight;
+       }
+     }
+-    size = calculate_size(size, baseWidth, baseHeight, g_scale, g_aspectFit);
++    size = calculate_size(size, baseWidth, baseHeight, g_scale, g_aspectFit, g_displayAspect);
+   }
+ 
+   webgpu::resize_efb(size.fb_width, size.fb_height);
+diff --git a/lib/gfx/efb.hpp b/lib/gfx/efb.hpp
+index 98f4951..7bc1067 100644
+--- a/lib/gfx/efb.hpp
++++ b/lib/gfx/efb.hpp
+@@ -28,9 +28,11 @@ AuroraWindowSize applied_size();
+ AuroraWindowSize pending_size();
+ AuroraWindowSize resolve_size(AuroraWindowSize size);
+ AuroraWindowSize calculate_size(AuroraWindowSize size, uint32_t baseWidth, uint32_t baseHeight,
+-                                float frameBufferScale, bool aspectFit) noexcept;
++                                float frameBufferScale, bool aspectFit, float displayAspect = 0.f) noexcept;
+ void set_display_size(uint32_t width, uint32_t height, float scale);
+ bool set_scale(float scale);
+ bool set_aspect_fit(bool fit);
++// Widescreen: 0 = the game's own (logical) aspect, > 0 a fixed display aspect, < 0 the window's.
++bool set_display_aspect(float aspect);
+ 
+ } // namespace aurora::gfx::efb
+diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
+index 00767d4..0dcd2a6 100644
+--- a/lib/gfx/recording.cpp
++++ b/lib/gfx/recording.cpp
+@@ -604,10 +604,13 @@ const webgpu::TextureWithSampler& acquire_xfb(uint32_t width, uint32_t height, w
+ }
+ 
+ present::Request record_present(present::TargetSnapshot target, webgpu::TextureWithSampler source,
+-                                bool resample = true) {
++                                bool resample = true, float contentScaleY = 1.f) {
+   auto& frame = current_frame_packet();
++  // contentScaleY: present the source this much taller than its pixels (letterbox fill)
++  const auto contentHeight =
++      std::max(1u, static_cast<uint32_t>(std::lround(static_cast<double>(source.size.height) * contentScaleY)));
+   const auto viewport = webgpu::calculate_present_viewport(target.size.native_fb_width, target.size.native_fb_height,
+-                                                           source.size.width, source.size.height);
++                                                           source.size.width, contentHeight);
+   if (!resample) {
+     return {
+         .target = std::move(target),
+@@ -700,7 +703,18 @@ void record_xfb_present(imgui::DrawData drawData, wgpu::BindGroup rmlBindGroup,
+   }
+ 
+   const bool resample = !rmlBindGroup || rmlOverlay;
+-  auto request = record_present(efb.xfb, xfb_present_source(), resample);
++  // Letterbox fill (AuroraSetLetterboxFill, widescreen): a composed XFB clearly shorter than the
++  // logical frame buffer is presented at the frame buffer's full height.
++  float scaleY = 1.f;
++  const auto& gxs = gx::g_gxState;
++  if (gxs.letterboxFill && g_xfb.view && gxs.xfbHeight != 0) {
++    const float logicalHeight = static_cast<float>(gx::logical_fb_size().y);
++    const float lines = static_cast<float>(gxs.xfbHeight);
++    if (lines < logicalHeight * 0.85f) {
++      scaleY = logicalHeight / lines;
++    }
++  }
++  auto request = record_present(efb.xfb, xfb_present_source(), resample, scaleY);
+   request.primary = true;
+   request.imguiDrawData = std::move(drawData);
+   request.rmlBindGroup = std::move(rmlBindGroup);
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index 65f2109..e22ddff 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -305,6 +305,87 @@ bool vertex_mv_pos(GXVtxFmt fmt, const u8* vtx, Vec4<float>& out) noexcept {
+   return false;
+ }
+ 
++// Widescreen (AuroraSetDisplayAspect): how much wider the render target is than the logical
++// frame buffer it stands for.
++float widescreen_factor() noexcept {
++  if (g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE) {
++    return 1.f;
++  }
++  const auto [logicalWidth, logicalHeight] = logical_fb_size();
++  const auto [targetWidth, targetHeight] = gfx::get_render_target_size();
++  if (logicalWidth == 0 || logicalHeight == 0 || targetWidth == 0 || targetHeight == 0) {
++    return 1.f;
++  }
++  const float k = (static_cast<float>(targetWidth) / static_cast<float>(targetHeight)) /
++                  (static_cast<float>(logicalWidth) / static_cast<float>(logicalHeight));
++  return std::abs(k - 1.f) < 0.002f ? 1.f : k;
++}
++
++// Horizontal projection scale for a draw on a widened target: 3D gets the wider field of view;
++// 2D keeps its logical aspect, centered (HUD, menus, text), unless the draw spans the whole
++// viewport width (backgrounds, fades, letterbox bars, render-to-texture passes), which stretch.
++// Letterboxed frames with letterboxFill: how much the presentation stretches them vertically
++// (the logical frame buffer's height over the XFB's lines), 1 otherwise. Only clearly letterboxed
++// frames (cinematics at 304 lines, not gameplay's 450).
++float letterbox_factor() noexcept {
++  if (!g_gxState.letterboxFill || g_gxState.xfbHeight == 0) {
++    return 1.f;
++  }
++  const float logicalHeight = static_cast<float>(logical_fb_size().y);
++  const float lines = static_cast<float>(g_gxState.xfbHeight);
++  return lines < logicalHeight * 0.85f ? logicalHeight / lines : 1.f;
++}
++
++struct ProjScale {
++  float x = 1.f, y = 1.f, xOffset = 1.f;
++};
++
++// Projection scales for a draw on a widened target (and in a letterboxed frame stretched to fill
++// it). 3D keeps the framing the game had along the axis that fits and opens up the other: wider
++// field of view on a wider target, taller for cinematics that are wider than the display. 2D keeps
++// its logical shape, centered (HUD, menus, text), unless the draw spans the whole viewport width
++// (backgrounds, fades, letterbox bars, render-to-texture passes), which stretches.
++ProjScale widescreen_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxSize) noexcept {
++  const float k = widescreen_factor();
++  const float v = k == 1.f ? 1.f : letterbox_factor();
++  if (k == 1.f && v == 1.f) {
++    return {};
++  }
++  if (g_gxState.projType != GX_ORTHOGRAPHIC) {
++    // A projection the game already made for the wider target (its own camera aspect widened,
++    // so that it also culls for it) stays as it is. (Exactly the logical aspect times the
++    // widening: other aspects, e.g. letterboxed cutscene cameras, are the game's own.)
++    const float p0 = g_gxState.proj.m0[0], p2 = g_gxState.proj.m1[1];
++    const auto [logicalWidth, logicalHeight] = logical_fb_size();
++    const float logicalAspect = static_cast<float>(logicalWidth) / static_cast<float>(std::max(logicalHeight, 1u));
++    // Its off-center shift (e.g. the HUD radar's camera, aimed at a corner) still follows the
++    // 4:3 layout the rest of the HUD keeps.
++    if (p0 != 0.f && std::abs(std::abs(p2 / p0) / (logicalAspect * k) - 1.f) < 0.01f) {
++      return {1.f, 1.f / v, 1.f / k};
++    }
++    // shown k times wider and v times taller than the game drew it for
++    const float r = k / v;
++    return r >= 1.f ? ProjScale{1.f / r, 1.f} : ProjScale{1.f, r};
++  }
++  const auto& proj = g_gxState.proj;
++  float minX = 1e30f, maxX = -1e30f;
++  for (u32 i = 0; i < vtxCount; ++i) {
++    Vec4<float> mv;
++    if (!vertex_mv_pos(fmt, verts + i * vtxSize, mv)) {
++      return {1.f / k, 1.f / v};
++    }
++    const float w = proj.m3[0] * mv[0] + proj.m3[1] * mv[1] + proj.m3[2] * mv[2] + proj.m3[3];
++    const float x = proj.m0[0] * mv[0] + proj.m0[1] * mv[1] + proj.m0[2] * mv[2] + proj.m0[3];
++    const float ndc = w != 0.f ? x / w : x;
++    minX = std::min(minX, ndc);
++    maxX = std::max(maxX, ndc);
++  }
++  if (minX <= -0.95f && maxX >= 0.95f) {
++    return {};
++  }
++  return {1.f / k, 1.f / v};
++}
++
+ void update_zfreeze_plane(GXVtxFmt fmt, const u8* lastVerts, u32 vtxSize) noexcept {
+   auto& state = g_gxState;
+   // the projection and viewport depth range as fill_uniform and the vertex shader apply them
+@@ -314,6 +395,7 @@ void update_zfreeze_plane(GXVtxFmt fmt, const u8* lastVerts, u32 vtxSize) noexce
+   } else {
+     proj.m2 = proj.m2 + proj.m3;
+   }
++  apply_widescreen_scale(proj);
+   const auto& lvp = state.logicalViewport;
+   const double depthBase = UseReversedZ ? 1.0 - lvp.zfar : lvp.znear;
+   const double depthRange = lvp.zfar - lvp.znear;
+@@ -666,6 +748,15 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader&
+     return;
+   }
+ 
++  const u8* verts = reader.data() + reader.offset();
++  if (const auto ps = widescreen_scale(fmt, verts, vtxCount, vtxSize);
++      ps.x != g_gxState.projXScale || ps.y != g_gxState.projYScale || ps.xOffset != g_gxState.projXOffsetScale) {
++    g_gxState.projXScale = ps.x;
++    g_gxState.projYScale = ps.y;
++    g_gxState.projXOffsetScale = ps.xOffset;
++    g_gxState.dirty |= DirtyUniform;
++  }
++
+   const bool triangles =
+       prim == GX_QUADS || prim == GX_TRIANGLES || prim == GX_TRIANGLESTRIP || prim == GX_TRIANGLEFAN;
+   if (g_gxState.zFreeze) {
+@@ -674,7 +765,7 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader&
+     }
+   } else if (triangles) {
+     // before any culling: the reference triangle is often drawn with GX_CULL_ALL
+-    update_zfreeze_plane(fmt, reader.data() + reader.offset() + (vtxCount - 3) * vtxSize, vtxSize);
++    update_zfreeze_plane(fmt, verts + (vtxCount - 3) * vtxSize, vtxSize);
+   }
+ 
+   const bool cleanState = g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt && sDrawCache.lineMode == 0 &&
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index f4826cf..f992bfb 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -383,6 +383,14 @@ struct GXState {
+   // zfreeze (GenMode bit 19): primitives take their depth from the plane of the last triangle
+   // drawn without it, in render target pixels: depth = dzdx * x + dzdy * y + z0 (as written to
+   // the depth buffer, i.e. reversed if UseReversedZ). zFreezePlaneGen counts plane updates.
++  // Widescreen: horizontal scale applied to the projection's x row for the current draw
++  // (1 / widening factor for perspective and small 2D draws, 1 for full-width 2D draws).
++  float projXScale = 1.f;
++  float projYScale = 1.f;
++  float projXOffsetScale = 1.f; // perspective x offset (row 0, z column) only, on top of projXScale
++  // Widescreen: letterboxed frames (XFB much shorter than the logical frame buffer, e.g. 304
++  // lines for cutscenes) are presented stretched to the full height, their draws compensated.
++  bool letterboxFill = false;
+   bool zFreeze = false;
+   Vec4<float> zFreezePlane{0.f, 0.f, 0.f, 0.f};
+   u32 zFreezePlaneGen = 0;
+@@ -443,7 +451,20 @@ struct GXState {
+   void clearVtxSizeCache() { lastVtxFmt = GX_MAX_VTXFMT; }
+ };
+ extern GXState g_gxState;
+-struct ShaderInfo;
++
++// Widescreen: the per-draw projection scales (see widescreen_scale in command_processor.cpp)
++// applied to a projection as the vertex shader receives it.
++inline void apply_widescreen_scale(Mat4x4<float>& proj) noexcept {
++  const auto& s = g_gxState;
++  if (s.projXScale != 1.f || s.projXOffsetScale != 1.f) {
++    const float x = s.projXScale;
++    proj.m0 = proj.m0 * Vec4{x, x, x * s.projXOffsetScale, x};
++  }
++  if (s.projYScale != 1.f) {
++    const float y = s.projYScale;
++    proj.m1 = proj.m1 * Vec4{y, y, y, y};
++  }
++}struct ShaderInfo;
+ 
+ void initialize() noexcept;
+ void shutdown() noexcept;
+diff --git a/lib/gx/shader_info.cpp b/lib/gx/shader_info.cpp
+index 0698c2b..5ddcdcc 100644
+--- a/lib/gx/shader_info.cpp
++++ b/lib/gx/shader_info.cpp
+@@ -498,6 +498,7 @@ static void fill_uniform(ByteBuffer& buf, const ShaderInfo& info) noexcept {
+   } else {
+     proj.m2 = proj.m2 + proj.m3;
+   }
++  apply_widescreen_scale(proj);
+   buf.append(proj);
+   {
+     // The viewport's depth range is applied in the vertex shader (the render pass viewport always
+diff --git a/lib/window.cpp b/lib/window.cpp
+index 8ff7027..795a058 100644
+--- a/lib/window.cpp
++++ b/lib/window.cpp
+@@ -786,6 +786,17 @@ void set_frame_buffer_scale(float scale) {
+   notify_frame_buffer_change();
+ }
+ 
++void set_frame_buffer_display_aspect(float aspect) {
++#ifdef AURORA_ENABLE_GX
++  if (!gfx::efb::set_display_aspect(aspect)) {
++    return;
++  }
++  notify_frame_buffer_change();
++#else
++  (void)aspect;
++#endif
++}
++
+ void set_frame_buffer_aspect_fit(bool fit) {
+ #ifdef AURORA_ENABLE_GX
+   if (!gfx::efb::set_aspect_fit(fit)) {
+diff --git a/lib/window.hpp b/lib/window.hpp
+index 518610e..7737183 100644
+--- a/lib/window.hpp
++++ b/lib/window.hpp
+@@ -68,5 +68,6 @@ void center_window();
+ void notify_frame_buffer_change();
+ void set_frame_buffer_scale(float scale);
+ void set_frame_buffer_aspect_fit(bool fit);
++void set_frame_buffer_display_aspect(float aspect);
+ void set_background_input(bool value);
+ }; // namespace aurora::window

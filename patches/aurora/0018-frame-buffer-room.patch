@@ -1,0 +1,138 @@
+diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
+index 928edff..24623e3 100644
+--- a/lib/gfx/recording.cpp
++++ b/lib/gfx/recording.cpp
+@@ -38,6 +38,7 @@ using namespace detail;
+ 
+ namespace {
+ constexpr Module Log{"aurora::gfx"};
++uint32_t g_droppedDraws = 0;  // draws that did not fit this frame's buffers (frame_has_room)
+ 
+ struct FrameRecorder {
+   FramePacket* packet = nullptr;
+@@ -285,6 +286,13 @@ void seal_pass(FramePacket& frame, uint32_t passIndex) {
+ }
+ 
+ Range push(ByteBuffer& target, const uint8_t* data, size_t length, size_t alignment) {
++  // The frame's buffers are fixed-size mapped ranges: say which one ran out, not just abort
++  if (!target.owned() && target.size() + length + alignment > target.capacity()) {
++    auto& f = current_frame_packet();
++    Log.fatal("frame buffer overflow pushing {} bytes: verts {}/{} indices {}/{} uniforms {}/{} storage {}/{}", length,
++              f.verts.size(), f.verts.capacity(), f.indices.size(), f.indices.capacity(), f.uniforms.size(),
++              f.uniforms.capacity(), f.storage.size(), f.storage.capacity());
++  }
+   if (alignment != 0) {
+     const size_t begin = target.size();
+     const size_t alignedBegin = AURORA_ALIGN(begin, alignment);
+@@ -738,6 +746,13 @@ RecordedFrame end_recording() {
+   frame.stats.lastIndexSize = frame.indices.size();
+   frame.stats.lastStorageSize = frame.storage.size();
+   frame.stats.lastTextureUploadSize = frame.textureUpload.size();
++  if (g_droppedDraws != 0) {
++    Log.warn("frame buffers full: {} draws dropped (verts {}/{} indices {}/{} uniforms {}/{} storage {}/{})",
++             g_droppedDraws, frame.verts.size(), frame.verts.capacity(), frame.indices.size(),
++             frame.indices.capacity(), frame.uniforms.size(), frame.uniforms.capacity(), frame.storage.size(),
++             frame.storage.capacity());
++    g_droppedDraws = 0;
++  }
+ 
+   for (auto& array : gx::g_gxState.arrays) {
+     array.cachedRange = {};
+@@ -1533,6 +1548,17 @@ Range push_storage(const uint8_t* data, size_t length) {
+   return push(current_frame_packet().storage, data, length, resources().limits.minStorageBufferOffsetAlignment);
+ }
+ 
++bool frame_has_room(size_t verts, size_t indices, size_t uniforms, size_t storage) noexcept {
++  if (!g_recorder.active()) {
++    return true;
++  }
++  const auto& f = current_frame_packet();
++  const auto fits = [](const ByteBuffer& b, size_t n) { return b.owned() || b.size() + n <= b.capacity(); };
++  return fits(f.verts, verts) && fits(f.indices, indices) && fits(f.uniforms, uniforms) && fits(f.storage, storage);
++}
++
++void note_dropped_draw() noexcept { ++g_droppedDraws; }
++
+ Range push_texture_data(const uint8_t* data, u32 bytesPerRow, u32 rowsPerImage) {
+   // For CopyBufferToTexture, we need an alignment of 256 per row (see Dawn kTextureBytesPerRowAlignment)
+   const auto copyBytesPerRow = AURORA_ALIGN(bytesPerRow, 256);
+diff --git a/lib/gfx/recording.hpp b/lib/gfx/recording.hpp
+index e8bb429..b3923e4 100644
+--- a/lib/gfx/recording.hpp
++++ b/lib/gfx/recording.hpp
+@@ -105,6 +105,10 @@ Range push_storage(const T& data) {
+   return push_storage(reinterpret_cast<const uint8_t*>(&data), sizeof(T));
+ }
+ Range push_texture_data(const uint8_t* data, uint32_t bytesPerRow, uint32_t rowsPerImage);
++// Whether the current frame's buffers can still take this much (bytes, alignment included).
++// A draw that does not fit is dropped (note_dropped_draw) instead of overflowing the buffers.
++bool frame_has_room(size_t verts, size_t indices, size_t uniforms, size_t storage) noexcept;
++void note_dropped_draw() noexcept;
+ 
+ template <typename DrawData>
+ void push_draw_command(DrawData data);
+diff --git a/lib/gfx/resources.hpp b/lib/gfx/resources.hpp
+index 3fdc0ee..df3e4d2 100644
+--- a/lib/gfx/resources.hpp
++++ b/lib/gfx/resources.hpp
+@@ -4,10 +4,13 @@
+ 
+ namespace aurora::gfx {
+ inline constexpr bool UseTextureBuffer = true;
+-inline constexpr uint64_t UniformBufferSize = 25165824; // 24 MiB
+-inline constexpr uint64_t VertexBufferSize = 5242880;   // 5 MiB
+-inline constexpr uint64_t IndexBufferSize = 2097152;    // 2 MiB
+-inline constexpr uint64_t StorageBufferSize = 8388608;  // 8 MiB
++// Per frame (upstream: 24 / 5 / 2 / 8 MiB). Rogue Leader's Battle of Hoth intro starts with three
++// game frames in one presented frame (~54,000 draws): uniforms 29 MiB, vertices 6, indices 3.2,
++// storage 13.3. A draw that still does not fit is dropped (frame_has_room), not fatal.
++inline constexpr uint64_t UniformBufferSize = 50331648; // 48 MiB
++inline constexpr uint64_t VertexBufferSize = 10485760;   // 10 MiB
++inline constexpr uint64_t IndexBufferSize = 5242880;     // 5 MiB
++inline constexpr uint64_t StorageBufferSize = 20971520; // 20 MiB
+ inline constexpr uint64_t TextureUploadSize = 25165824; // 24 MiB
+ 
+ namespace detail {
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index 402b3c0..cbbaea6 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -1012,6 +1012,25 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader&
+   auto* lastDraw = cleanState ? gfx::get_last_draw_command<DrawData>() : nullptr;
+   const bool canMerge = lastDraw != nullptr && lastDraw->instanceCount == 1;
+ 
++  // The frame's buffers are fixed-size: a draw that would overflow one is dropped (and counted)
++  // rather than ending the program. Index bound: lines expand to 12 bytes a vertex at most, and
++  // a merge may index the previous plain triangle list as well.
++  {
++    size_t storageNeed = 64 * 1024;
++    for (int i = GX_VA_POS; i <= GX_VA_TEX7; ++i) {
++      if ((g_gxState.vtxDesc[i] == GX_INDEX8 || g_gxState.vtxDesc[i] == GX_INDEX16) &&
++          g_gxState.arrays[i].cachedRange.size == 0) {
++        storageNeed += g_gxState.arrays[i].size + 256;
++      }
++    }
++    const size_t idxNeed = size_t(vtxCount) * 12 + (canMerge ? size_t(lastDraw->vtxCount) * 2 : 0) + 64 * 1024;
++    if (!gfx::frame_has_room(totalVtxBytes + 64 * 1024, idxNeed, 64 * 1024, storageNeed)) {
++      reader.take(totalVtxBytes);
++      gfx::note_dropped_draw();
++      return;
++    }
++  }
++
+   // Push raw vertex data to buffer. Merged draws must remain contiguous with the previous range.
+   const auto vertexData = reader.take(totalVtxBytes);
+   gfx::Range vertRange = gfx::push_verts(vertexData.data(), vertexData.size(), canMerge ? 0 : 4);
+diff --git a/lib/internal.hpp b/lib/internal.hpp
+index d1adb6c..9e6939a 100644
+--- a/lib/internal.hpp
++++ b/lib/internal.hpp
+@@ -284,6 +284,8 @@ public:
+   [[nodiscard]] const uint8_t* data() const noexcept { return m_data; }
+   [[nodiscard]] size_t size() const noexcept { return m_length; }
+   [[nodiscard]] bool empty() const noexcept { return m_length == 0; }
++  [[nodiscard]] size_t capacity() const noexcept { return m_capacity; }
++  [[nodiscard]] bool owned() const noexcept { return m_owned; }
+ 
+   void append(const void* data, size_t size) {
+     resize(m_length + size, false);

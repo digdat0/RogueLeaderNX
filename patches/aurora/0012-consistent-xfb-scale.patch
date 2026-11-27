@@ -1,0 +1,26 @@
+diff --git a/lib/dolphin/gx/GXFrameBuffer.cpp b/lib/dolphin/gx/GXFrameBuffer.cpp
+index 755251a..b305623 100644
+--- a/lib/dolphin/gx/GXFrameBuffer.cpp
++++ b/lib/dolphin/gx/GXFrameBuffer.cpp
+@@ -63,11 +63,19 @@ void copy_disp(GXBool clear) noexcept {
+   const auto clearColor = clear && g_gxState.colorUpdate;
+   const auto clearAlpha = clear && g_gxState.alphaUpdate && efb_has_alpha(g_gxState.pixelFmt);
+   const auto clearDepth = clear && g_gxState.depthUpdate;
+-  // Destination within a composed XFB, scaled like the source rect (logical -> host pixels).
++  // Destination within a composed XFB (logical -> host pixels). Every copy into it takes the
++  // frame buffer's one scale: a scale from each copy's own rounded rect differs between copies
++  // at fractional scales (900 / 480: the top half's rect 424 rows, the bottom's 425), and the
++  // XFB height following it changed between the halves of one frame, so the second half's copy
++  // started a new XFB and the first half was lost.
+   s32 dstY = 0;
+   u32 xfbHeight = 0;
+   if (g_gxState.xfbHeight != 0 && g_gxState.dispCopySrc.height > 0) {
+-    const float scale = static_cast<float>(rect.height) / static_cast<float>(g_gxState.dispCopySrc.height);
++    const auto [logicalWidth, logicalHeight] = logical_fb_size();
++    const auto [targetWidth, targetHeight] = gfx::get_render_target_size();
++    const float scale = g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE || logicalHeight == 0 || targetHeight == 0
++                            ? 1.f
++                            : static_cast<float>(targetHeight) / static_cast<float>(logicalHeight);
+     dstY = static_cast<s32>(static_cast<float>(g_gxState.dispCopyDstY) * scale + 0.5f);
+     xfbHeight = static_cast<u32>(static_cast<float>(g_gxState.xfbHeight) * scale + 0.5f);
+   }

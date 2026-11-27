@@ -1,0 +1,169 @@
+diff --git a/include/aurora/texture.hpp b/include/aurora/texture.hpp
+index 6c68778..d3add5f 100644
+--- a/include/aurora/texture.hpp
++++ b/include/aurora/texture.hpp
+@@ -97,6 +97,21 @@ void reload_replacement_directory(const std::filesystem::path& root, Replacement
+ 
+ bool has_replacement(const GXTexObj* obj, const GXTlutObj* tlut = nullptr);
+ 
++// Prefetch (Dolphin's "Prefetch Custom Textures"): every registered file texture is read and
++// parsed into memory on the texture workers, up to budgetBytes; a texture used for the first
++// time (or again after leaving the GPU cache) then gets its full GPU texture at once, without a
++// low-resolution preview or a disk read first. Registrations made later are not prefetched.
++struct PrefetchStatus {
++  uint64_t total = 0;    // textures queued
++  uint64_t done = 0;     // loaded, failed or skipped
++  uint64_t bytes = 0;    // held in memory
++  bool budgetFull = false;
++};
++void prefetch_replacements(uint64_t budgetBytes);
++PrefetchStatus prefetch_status();
++// Frees every prefetched texture (e.g. after unregistering a pack).
++void clear_prefetched_replacements();
++
+ } // namespace aurora::texture
+ 
+ #endif
+diff --git a/lib/gfx/texture_replacement.cpp b/lib/gfx/texture_replacement.cpp
+index 03dda46..ce141fd 100644
+--- a/lib/gfx/texture_replacement.cpp
++++ b/lib/gfx/texture_replacement.cpp
+@@ -27,6 +27,7 @@
+ #include <deque>
+ #include <filesystem>
+ #include <list>
++#include <atomic>
+ #include <memory>
+ #include <mutex>
+ #include <optional>
+@@ -81,6 +82,7 @@ struct ReplacementEntry {
+ enum class Tier {
+   Thumbnail,
+   Full,
++  Prefetch, // into s_prefetched (memory), not published
+ };
+ 
+ struct SelectedCache {
+@@ -151,6 +153,15 @@ std::vector<LoadCompletion> s_readyPublishes;
+ std::unordered_map<uint64_t, uint64_t> s_pendingFullLoads;
+ std::unordered_set<uint64_t> s_pendingThumbnailLoads;
+ std::vector<thread::Thread> s_workers;
++
++// Prefetched textures (prefetch_replacements): entry id -> parsed texture in memory.
++std::mutex s_prefetchMutex;
++absl::flat_hash_map<uint64_t, std::shared_ptr<const gfx::ConvertedTexture>> s_prefetched;
++std::atomic<uint64_t> s_prefetchTotal{0};
++std::atomic<uint64_t> s_prefetchDone{0};
++std::atomic<uint64_t> s_prefetchBytes{0};
++std::atomic<uint64_t> s_prefetchBudget{0};
++std::atomic<bool> s_prefetchFull{false};
+ uint64_t s_requestSequence = 0;
+ bool s_workersPaused = false;
+ uint32_t s_workerCountOverride = 0;
+@@ -789,6 +800,26 @@ void worker_main(std::stop_token token) {
+       }
+     }
+ 
++    if (job.tier == Tier::Prefetch) {
++      if (!s_prefetchFull.load(std::memory_order_relaxed)) {
++        auto loaded = job.entry.kind == EntryKind::File ? load_file_replacement(job.entry)
++                                                        : load_virtual_replacement(job.entry);
++        if (loaded.has_value()) {
++          const uint64_t bytes = loaded->data.size();
++          if (s_prefetchBytes.load(std::memory_order_relaxed) + bytes > s_prefetchBudget.load(std::memory_order_relaxed)) {
++            s_prefetchFull.store(true, std::memory_order_relaxed);
++          } else {
++            s_prefetchBytes.fetch_add(bytes, std::memory_order_relaxed);
++            std::lock_guard lock{s_prefetchMutex};
++            s_prefetched.insert_or_assign(job.entry.id,
++                                          std::make_shared<const gfx::ConvertedTexture>(std::move(*loaded)));
++          }
++        }
++      }
++      s_prefetchDone.fetch_add(1, std::memory_order_relaxed);
++      continue;
++    }
++
+     std::optional<gfx::ConvertedTexture> texture;
+     bool thumbnailIncludesBase = false;
+     bool thumbnailStored = false;
+@@ -1160,6 +1191,21 @@ find_replacement_for_key_locked(const ReplacementKey& key) noexcept {
+   }
+ 
+   erase_cache_locked(key);
++  // Prefetched: the full texture at once, from memory.
++  std::shared_ptr<const gfx::ConvertedTexture> prefetched;
++  {
++    std::lock_guard lock{s_prefetchMutex};
++    if (const auto it = s_prefetched.find(entry->id); it != s_prefetched.end()) {
++      prefetched = it->second;
++    }
++  }
++  if (prefetched) {
++    const auto snapshot = snapshot_entry(key, *entry);
++    if (auto handle = create_converted_texture_handle(snapshot, *prefetched)) {
++      cache_replacement_locked(key, entry->id, handle, Tier::Full);
++      return gfx::texture_replacement::ReplacementResult{.handle = std::move(handle), .id = entry->id};
++    }
++  }
+   if constexpr (gx::texture::AsyncTextureReplacements) {
+     // Raw entry data is borrowed, so they must take the synchronous path.
+     if (entry->kind != EntryKind::Raw) {
+@@ -1577,6 +1623,7 @@ void clear_replacements() {
+     gx::clear_static_texture_cache();
+   }
+   wait_for_virtual_reads(waitStates);
++  clear_prefetched_replacements();
+ }
+ 
+ ReplacementRegistration register_virtual_replacement(std::string_view path, VirtualFileSource source,
+@@ -1688,6 +1735,49 @@ void reload_replacement_directory(const std::filesystem::path& root, Replacement
+   group = load_replacement_directory(root, options);
+ }
+ 
++void prefetch_replacements(uint64_t budgetBytes) {
++  std::vector<EntryLoadSnapshot> snapshots;
++  {
++    std::lock_guard lock{s_registryMutex};
++    for (const auto& [key, entries] : s_entriesByKey) {
++      const auto* entry = find_selected_entry_locked(key);
++      if (entry == nullptr || entry->kind == EntryKind::Raw || s_failedIds.contains(entry->id)) {
++        continue;
++      }
++      snapshots.push_back(snapshot_entry(key, *entry));
++    }
++  }
++  s_prefetchBudget.store(budgetBytes, std::memory_order_relaxed);
++  s_prefetchFull.store(false, std::memory_order_relaxed);
++  s_prefetchTotal.fetch_add(snapshots.size(), std::memory_order_relaxed);
++  start_worker_pool();
++  {
++    std::lock_guard lock{s_jobMutex};
++    for (auto& snapshot : snapshots) {
++      s_lowPriorityJobs.push_back({.tier = Tier::Prefetch, .entry = std::move(snapshot)});
++    }
++  }
++  s_jobCv.notify_all();
++}
++
++void clear_prefetched_replacements() {
++  {
++    std::lock_guard lock{s_prefetchMutex};
++    s_prefetched.clear();
++  }
++  s_prefetchBytes.store(0, std::memory_order_relaxed);
++  s_prefetchFull.store(false, std::memory_order_relaxed);
++}
++
++PrefetchStatus prefetch_status() {
++  return {
++      .total = s_prefetchTotal.load(std::memory_order_relaxed),
++      .done = s_prefetchDone.load(std::memory_order_relaxed),
++      .bytes = s_prefetchBytes.load(std::memory_order_relaxed),
++      .budgetFull = s_prefetchFull.load(std::memory_order_relaxed),
++  };
++}
++
+ bool has_replacement(const GXTexObj* obj, const GXTlutObj* tlut) {
+   const auto* obj_ = reinterpret_cast<const GXTexObj_*>(obj);
+   if (tlut != nullptr) {

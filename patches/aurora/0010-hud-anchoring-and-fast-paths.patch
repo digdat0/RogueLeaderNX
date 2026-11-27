@@ -1,0 +1,497 @@
+diff --git a/include/dolphin/gx/GXAurora.h b/include/dolphin/gx/GXAurora.h
+index df8e7e0..6b7ea1a 100644
+--- a/include/dolphin/gx/GXAurora.h
++++ b/include/dolphin/gx/GXAurora.h
+@@ -210,6 +210,13 @@ void AuroraSetDisplayAspect(float aspect);
+  */
+ void AuroraSetLetterboxFill(bool fill);
+ 
++/**
++ * With a display aspect set: 2D draws (and off-center 3D ones) clearly on the left or right of
++ * the logical screen move to that edge of the wider target instead of keeping the 4:3 layout,
++ * e.g. for a game's HUD. Consecutive draws without state changes keep the first one's decision.
++ */
++void AuroraSetHudAnchoring(bool anchor);
++
+ /**
+  * Retrieves the current content framebuffer size.
+  */
+diff --git a/lib/dolphin/gx/GXAurora.cpp b/lib/dolphin/gx/GXAurora.cpp
+index a274971..7ce8c30 100644
+--- a/lib/dolphin/gx/GXAurora.cpp
++++ b/lib/dolphin/gx/GXAurora.cpp
+@@ -36,9 +36,22 @@ void GXInsertDebugMarker(const char* label) {
+ 
+ void AuroraSetViewportPolicy(AuroraViewportPolicy policy) { aurora::gx::set_viewport_policy(policy); }
+ 
+-void AuroraSetDisplayAspect(float aspect) { aurora::window::set_frame_buffer_display_aspect(aspect); }
++// These change state the FIFO processor reads: commands already sent are processed first
++// (with a worker thread, it may still be busy with them).
++void AuroraSetDisplayAspect(float aspect) {
++  aurora::gx::fifo::drain();
++  aurora::window::set_frame_buffer_display_aspect(aspect);
++}
+ 
+-void AuroraSetLetterboxFill(bool fill) { g_gxState.letterboxFill = fill; }
++void AuroraSetLetterboxFill(bool fill) {
++  aurora::gx::fifo::drain();
++  g_gxState.letterboxFill = fill;
++}
++
++void AuroraSetHudAnchoring(bool anchor) {
++  aurora::gx::fifo::drain();
++  g_gxState.hudAnchoring = anchor;
++}
+ 
+ void AuroraGetRenderSize(u32* width, u32* height) {
+   const auto windowSize = aurora::window::get_window_size();
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index e22ddff..17ddae3 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -14,9 +14,11 @@
+ #include <tracy/Tracy.hpp>
+ 
+ #include <algorithm>
++#include <array>
+ #include <bit>
+ #include <cmath>
+ #include <cstdint>
++#include <cstring>
+ #include <span>
+ #include <vector>
+ 
+@@ -250,11 +252,24 @@ float read_component(const u8* p, GXCompType type, u8 frac, bool le) noexcept {
+   }
+ }
+ 
+-// Model-view position of one vertex of raw vertex data, as the vertex shader computes it.
+-bool vertex_mv_pos(GXVtxFmt fmt, const u8* vtx, Vec4<float>& out) noexcept {
++// Where a vertex format keeps its position (and per-vertex matrix index), from the current
++// vertex descriptor and attribute format.
++struct PosLayout {
++  bool valid = false;
++  u32 posOffset = 0;
++  GXAttrType posType = GX_NONE;
++  GXCompType compType = GX_F32;
++  u8 cnt = 3, size = 4, frac = 0;
++  int mtxIdxOffset = -1; // GX_VA_PNMTXIDX in the vertex, or -1: the CP's current matrix
++  const u8* array = nullptr;
++  u32 arraySize = 0, arrayStride = 0;
++  bool arrayLe = false;
++};
++
++PosLayout pos_layout(GXVtxFmt fmt) noexcept {
+   const auto& state = g_gxState;
+   const auto& vtxFmt = state.vtxFmts[fmt];
+-  u32 mtx = state.currentPnMtx;
++  PosLayout l;
+   u32 offset = 0;
+   for (int i = GX_VA_PNMTXIDX; i <= GX_VA_POS; ++i) {
+     const auto attr = static_cast<GXAttr>(i);
+@@ -264,37 +279,22 @@ bool vertex_mv_pos(GXVtxFmt fmt, const u8* vtx, Vec4<float>& out) noexcept {
+       continue;
+     }
+     if (attr == GX_VA_POS) {
+-      const u8* src = vtx + offset;
+-      bool le = false;
+-      const u8 cnt = comp_cnt_count(attr, attrFmt.cnt);
+-      const u8 size = comp_type_size(attr, attrFmt.type);
+-      if (type == GX_INDEX8 || type == GX_INDEX16) {
+-        const u32 idx = type == GX_INDEX8 ? src[0] : (u32(src[0]) << 8 | src[1]);
+-        const auto& array = state.arrays[GX_VA_POS];
+-        const u32 at = idx * array.stride;
+-        if (array.data == nullptr || at > array.size || u32(size) * cnt > array.size - at) {
+-          return false;
+-        }
+-        src = static_cast<const u8*>(array.data) + at;
+-        le = array.le;
+-      }
+-      const Vec4<float> pos{read_component(src, attrFmt.type, attrFmt.frac, le),
+-                            read_component(src + size, attrFmt.type, attrFmt.frac, le),
+-                            cnt == 3 ? read_component(src + 2 * size, attrFmt.type, attrFmt.frac, le) : 0.f, 1.f};
+-      Mat3x4<float> m{{1.f, 0.f, 0.f, 0.f}, {0.f, 1.f, 0.f, 0.f}, {0.f, 0.f, 1.f, 0.f}}; // GX_IDENTITY
+-      if (mtx < MaxPnMtx) {
+-        m = state.pnMtx[mtx].pos;
+-      } else if (mtx < MaxPnMtx + MaxTexMtx) {
+-        m = state.texMtxs[mtx - MaxPnMtx];
+-      }
+-      const auto dot4 = [](const Vec4<float>& a, const Vec4<float>& b) {
+-        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+-      };
+-      out = {dot4(pos, m.m0), dot4(pos, m.m1), dot4(pos, m.m2), 1.f};
+-      return true;
++      l.posOffset = offset;
++      l.posType = type;
++      l.compType = attrFmt.type;
++      l.cnt = comp_cnt_count(attr, attrFmt.cnt);
++      l.size = comp_type_size(attr, attrFmt.type);
++      l.frac = attrFmt.frac;
++      const auto& array = state.arrays[GX_VA_POS];
++      l.array = static_cast<const u8*>(array.data);
++      l.arraySize = array.size;
++      l.arrayStride = array.stride;
++      l.arrayLe = array.le;
++      l.valid = true;
++      return l;
+     }
+     if (attr == GX_VA_PNMTXIDX) {
+-      mtx = vtx[offset] / 3;
++      l.mtxIdxOffset = static_cast<int>(offset);
+     }
+     if (type == GX_DIRECT) {
+       offset += comp_type_size(attr, attrFmt.type) * comp_cnt_count(attr, attrFmt.cnt);
+@@ -302,7 +302,57 @@ bool vertex_mv_pos(GXVtxFmt fmt, const u8* vtx, Vec4<float>& out) noexcept {
+       offset += type == GX_INDEX8 ? 1 : 2;
+     }
+   }
+-  return false;
++  return l;
++}
++
++bool layout_position(const PosLayout& l, const u8* vtx, Vec4<float>& out) noexcept {
++  const u8* src = vtx + l.posOffset;
++  bool le = false;
++  if (l.posType == GX_INDEX8 || l.posType == GX_INDEX16) {
++    const u32 idx = l.posType == GX_INDEX8 ? src[0] : (u32(src[0]) << 8 | src[1]);
++    const u32 at = idx * l.arrayStride;
++    if (l.array == nullptr || at > l.arraySize || u32(l.size) * l.cnt > l.arraySize - at) {
++      return false;
++    }
++    src = l.array + at;
++    le = l.arrayLe;
++  }
++  out = {read_component(src, l.compType, l.frac, le), read_component(src + l.size, l.compType, l.frac, le),
++         l.cnt == 3 ? read_component(src + 2 * l.size, l.compType, l.frac, le) : 0.f, 1.f};
++  return true;
++}
++
++// XF matrix row / 3 -> the position matrix the vertex shader uses (postex_mtx)
++const Mat3x4<float>& position_matrix(u32 mtx) noexcept {
++  static const Mat3x4<float> identity{{1.f, 0.f, 0.f, 0.f}, {0.f, 1.f, 0.f, 0.f}, {0.f, 0.f, 1.f, 0.f}};
++  if (mtx < MaxPnMtx) {
++    return g_gxState.pnMtx[mtx].pos;
++  }
++  if (mtx < MaxPnMtx + MaxTexMtx) {
++    return g_gxState.texMtxs[mtx - MaxPnMtx];
++  }
++  return identity; // GX_IDENTITY
++}
++
++u32 vertex_matrix(const PosLayout& l, const u8* vtx) noexcept {
++  return l.mtxIdxOffset >= 0 ? vtx[l.mtxIdxOffset] / 3u : g_gxState.currentPnMtx;
++}
++
++Vec4<float> transform(const Mat3x4<float>& m, const Vec4<float>& p) noexcept {
++  const auto dot4 = [](const Vec4<float>& a, const Vec4<float>& b) {
++    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
++  };
++  return {dot4(p, m.m0), dot4(p, m.m1), dot4(p, m.m2), 1.f};
++}
++
++// Model-view position of one vertex of raw vertex data, as the vertex shader computes it.
++bool vertex_mv_pos(const PosLayout& l, const u8* vtx, Vec4<float>& out) noexcept {
++  Vec4<float> pos;
++  if (!l.valid || !layout_position(l, vtx, pos)) {
++    return false;
++  }
++  out = transform(position_matrix(vertex_matrix(l, vtx)), pos);
++  return true;
+ }
+ 
+ // Widescreen (AuroraSetDisplayAspect): how much wider the render target is than the logical
+@@ -311,14 +361,21 @@ float widescreen_factor() noexcept {
+   if (g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE) {
+     return 1.f;
+   }
++  // (every draw asks: recomputed only when the target size changes)
++  static Vec2<uint32_t> lastTarget{0, 0};
++  static float lastK = 1.f;
++  const auto target = gfx::get_render_target_size();
++  if (target.x == lastTarget.x && target.y == lastTarget.y) {
++    return lastK;
++  }
++  lastTarget = target;
+   const auto [logicalWidth, logicalHeight] = logical_fb_size();
+-  const auto [targetWidth, targetHeight] = gfx::get_render_target_size();
+-  if (logicalWidth == 0 || logicalHeight == 0 || targetWidth == 0 || targetHeight == 0) {
+-    return 1.f;
++  if (logicalWidth == 0 || logicalHeight == 0 || target.x == 0 || target.y == 0) {
++    return lastK = 1.f;
+   }
+-  const float k = (static_cast<float>(targetWidth) / static_cast<float>(targetHeight)) /
++  const float k = (static_cast<float>(target.x) / static_cast<float>(target.y)) /
+                   (static_cast<float>(logicalWidth) / static_cast<float>(logicalHeight));
+-  return std::abs(k - 1.f) < 0.002f ? 1.f : k;
++  return lastK = std::abs(k - 1.f) < 0.002f ? 1.f : k;
+ }
+ 
+ // Horizontal projection scale for a draw on a widened target: 3D gets the wider field of view;
+@@ -337,9 +394,12 @@ float letterbox_factor() noexcept {
+ }
+ 
+ struct ProjScale {
+-  float x = 1.f, y = 1.f, xOffset = 1.f;
++  float x = 1.f, y = 1.f, xOffset = 1.f, xAdd = 0.f;
+ };
+ 
++// HUD anchoring: a piece whose center is this far out (NDC) and that stays on one side.
++constexpr float HudAnchorCenter = 0.45f;
++
+ // Projection scales for a draw on a widened target (and in a letterboxed frame stretched to fill
+ // it). 3D keeps the framing the game had along the axis that fits and opens up the other: wider
+ // field of view on a wider target, taller for cinematics that are wider than the display. 2D keeps
+@@ -360,18 +420,30 @@ ProjScale widescreen_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxS
+     const float logicalAspect = static_cast<float>(logicalWidth) / static_cast<float>(std::max(logicalHeight, 1u));
+     // Its off-center shift (e.g. the HUD radar's camera, aimed at a corner) still follows the
+     // 4:3 layout the rest of the HUD keeps.
++    // HUD anchoring: a camera aimed off-center (its axis at x_ndc = -p1, the 4:3 layout) at a
++    // side moves with the 2D HUD it belongs to.
++    float xAdd = 0.f;
++    if (g_gxState.hudAnchoring && p0 != 0.f) {
++      const float center = -g_gxState.proj.m0[2];
++      if (center > HudAnchorCenter) {
++        xAdd = 1.f - 1.f / k;
++      } else if (center < -HudAnchorCenter) {
++        xAdd = 1.f / k - 1.f;
++      }
++    }
+     if (p0 != 0.f && std::abs(std::abs(p2 / p0) / (logicalAspect * k) - 1.f) < 0.01f) {
+-      return {1.f, 1.f / v, 1.f / k};
++      return {1.f, 1.f / v, 1.f / k, xAdd};
+     }
+     // shown k times wider and v times taller than the game drew it for
+     const float r = k / v;
+-    return r >= 1.f ? ProjScale{1.f / r, 1.f} : ProjScale{1.f, r};
++    return r >= 1.f ? ProjScale{1.f / r, 1.f, 1.f, xAdd} : ProjScale{1.f, r, 1.f, xAdd};
+   }
+   const auto& proj = g_gxState.proj;
++  const PosLayout layout = pos_layout(fmt);
+   float minX = 1e30f, maxX = -1e30f;
+   for (u32 i = 0; i < vtxCount; ++i) {
+     Vec4<float> mv;
+-    if (!vertex_mv_pos(fmt, verts + i * vtxSize, mv)) {
++    if (!vertex_mv_pos(layout, verts + i * vtxSize, mv)) {
+       return {1.f / k, 1.f / v};
+     }
+     const float w = proj.m3[0] * mv[0] + proj.m3[1] * mv[1] + proj.m3[2] * mv[2] + proj.m3[3];
+@@ -383,43 +455,91 @@ ProjScale widescreen_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxS
+   if (minX <= -0.95f && maxX >= 0.95f) {
+     return {};
+   }
++  // HUD anchoring: x_ndc' = (x_ndc +- 1) / k -+ 1 keeps the piece's distance to its edge
++  const float center = (minX + maxX) * 0.5f;
++  if (g_gxState.hudAnchoring && minX >= 0.f && center > HudAnchorCenter) {
++    return {1.f / k, 1.f / v, 1.f, 1.f - 1.f / k};
++  }
++  if (g_gxState.hudAnchoring && maxX <= 0.f && center < -HudAnchorCenter) {
++    return {1.f / k, 1.f / v, 1.f, 1.f / k - 1.f};
++  }
+   return {1.f / k, 1.f / v};
+ }
+ 
+-void update_zfreeze_plane(GXVtxFmt fmt, const u8* lastVerts, u32 vtxSize) noexcept {
+-  auto& state = g_gxState;
+-  // the projection and viewport depth range as fill_uniform and the vertex shader apply them
+-  auto proj = state.proj;
++// The zfreeze reference: what the plane needs of the last triangle drawn without zfreeze, taken
++// at that draw (state may change before a zfreeze draw comes, e.g. the matrix index) and turned
++// into a plane only when one does - most frames have none.
++struct ZFreezeRef {
++  bool pending = false;
++  PosLayout layout;
++  u32 vtxSize = 0;
++  std::array<u8, 3 * 256> verts{};
++  Mat3x4<float> mtx[3];
++  Mat4x4<float> proj; // as the vertex shader gets it
++  double depthBase = 0.0, depthRange = 1.0;
++  gfx::Viewport vp;
++};
++ZFreezeRef sZRef;
++
++Mat4x4<float> shader_projection() noexcept {
++  // the projection as fill_uniform hands it to the vertex shader
++  auto proj = g_gxState.proj;
+   if constexpr (UseReversedZ) {
+     proj.m2 = proj.m2 * Vec4{-1.f, -1.f, -1.f, -1.f};
+   } else {
+     proj.m2 = proj.m2 + proj.m3;
+   }
+   apply_widescreen_scale(proj);
+-  const auto& lvp = state.logicalViewport;
+-  const double depthBase = UseReversedZ ? 1.0 - lvp.zfar : lvp.znear;
+-  const double depthRange = lvp.zfar - lvp.znear;
+-  const auto& vp = state.renderViewport;
++  return proj;
++}
++
++void note_zfreeze_reference(GXVtxFmt fmt, const u8* lastVerts, u32 vtxSize) noexcept {
++  auto& z = sZRef;
++  z.layout = pos_layout(fmt);
++  if (!z.layout.valid || 3 * vtxSize > z.verts.size()) {
++    z.pending = false;
++    return;
++  }
++  std::memcpy(z.verts.data(), lastVerts, 3 * vtxSize);
++  z.vtxSize = vtxSize;
++  for (u32 i = 0; i < 3; ++i) {
++    z.mtx[i] = position_matrix(vertex_matrix(z.layout, z.verts.data() + i * vtxSize));
++  }
++  z.proj = shader_projection();
++  const auto& lvp = g_gxState.logicalViewport;
++  z.depthBase = UseReversedZ ? 1.0 - lvp.zfar : lvp.znear;
++  z.depthRange = lvp.zfar - lvp.znear;
++  z.vp = g_gxState.renderViewport;
++  z.pending = true;
++}
++
++void update_zfreeze_plane() noexcept {
++  auto& z = sZRef;
++  if (!z.pending) {
++    return;
++  }
++  z.pending = false;
+   double sx[3], sy[3], sz[3];
+   for (u32 i = 0; i < 3; ++i) {
+-    Vec4<float> mv;
+-    if (!vertex_mv_pos(fmt, lastVerts + i * vtxSize, mv)) {
++    Vec4<float> pos;
++    if (!layout_position(z.layout, z.verts.data() + i * z.vtxSize, pos)) {
+       return;
+     }
++    const Vec4<float> mv = transform(z.mtx[i], pos);
+     double clip[4];
+     for (int r = 0; r < 4; ++r) {
+-      const auto& row = proj[r];
++      const auto& row = z.proj[r];
+       clip[r] = double(row[0]) * mv[0] + double(row[1]) * mv[1] + double(row[2]) * mv[2] + double(row[3]);
+     }
+     if (clip[2] >= 0.0 && clip[2] <= clip[3]) {
+-      clip[2] = std::clamp(clip[3] * depthBase + clip[2] * depthRange, 0.0, clip[3]);
++      clip[2] = std::clamp(clip[3] * z.depthBase + clip[2] * z.depthRange, 0.0, clip[3]);
+     }
+     if (clip[3] == 0.0) {
+       return;
+     }
+     const double invW = 1.0 / clip[3];
+-    sx[i] = vp.left + (clip[0] * invW + 1.0) * 0.5 * vp.width;
+-    sy[i] = vp.top + (1.0 - clip[1] * invW) * 0.5 * vp.height;
++    sx[i] = z.vp.left + (clip[0] * invW + 1.0) * 0.5 * z.vp.width;
++    sy[i] = z.vp.top + (1.0 - clip[1] * invW) * 0.5 * z.vp.height;
+     sz[i] = clip[2] * invW;
+   }
+   // depth = a * x + b * y + c through the three screen-space vertices
+@@ -432,8 +552,8 @@ void update_zfreeze_plane(GXVtxFmt fmt, const u8* lastVerts, u32 vtxSize) noexce
+   const double a = (dz1 * dy2 - dz2 * dy1) / det;
+   const double b = (dx1 * dz2 - dx2 * dz1) / det;
+   const double c = sz[0] - a * sx[0] - b * sy[0];
+-  state.zFreezePlane = {static_cast<float>(a), static_cast<float>(b), static_cast<float>(c), 0.f};
+-  ++state.zFreezePlaneGen;
++  g_gxState.zFreezePlane = {static_cast<float>(a), static_cast<float>(b), static_cast<float>(c), 0.f};
++  ++g_gxState.zFreezePlaneGen;
+ }
+ } // namespace
+ 
+@@ -749,23 +869,31 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader&
+   }
+ 
+   const u8* verts = reader.data() + reader.offset();
+-  if (const auto ps = widescreen_scale(fmt, verts, vtxCount, vtxSize);
+-      ps.x != g_gxState.projXScale || ps.y != g_gxState.projYScale || ps.xOffset != g_gxState.projXOffsetScale) {
+-    g_gxState.projXScale = ps.x;
+-    g_gxState.projYScale = ps.y;
+-    g_gxState.projXOffsetScale = ps.xOffset;
+-    g_gxState.dirty |= DirtyUniform;
++  // A draw with nothing changed since the previous one (glyphs of a text, pieces of an element)
++  // keeps its widescreen scales: no per-draw work, and an element moves as one.
++  const bool unchanged = g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt;
++  if (!unchanged) {
++    if (const auto ps = widescreen_scale(fmt, verts, vtxCount, vtxSize);
++        ps.x != g_gxState.projXScale || ps.y != g_gxState.projYScale || ps.xOffset != g_gxState.projXOffsetScale ||
++        ps.xAdd != g_gxState.projXAdd) {
++      g_gxState.projXScale = ps.x;
++      g_gxState.projYScale = ps.y;
++      g_gxState.projXOffsetScale = ps.xOffset;
++      g_gxState.projXAdd = ps.xAdd;
++      g_gxState.dirty |= DirtyUniform;
++    }
+   }
+ 
+   const bool triangles =
+       prim == GX_QUADS || prim == GX_TRIANGLES || prim == GX_TRIANGLESTRIP || prim == GX_TRIANGLEFAN;
+   if (g_gxState.zFreeze) {
++    update_zfreeze_plane();
+     if (sDrawCache.zFreezePlaneGen != g_gxState.zFreezePlaneGen) {
+       g_gxState.dirty |= DirtyUniform;
+     }
+   } else if (triangles) {
+     // before any culling: the reference triangle is often drawn with GX_CULL_ALL
+-    update_zfreeze_plane(fmt, verts + (vtxCount - 3) * vtxSize, vtxSize);
++    note_zfreeze_reference(fmt, verts + (vtxCount - 3) * vtxSize, vtxSize);
+   }
+ 
+   const bool cleanState = g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt && sDrawCache.lineMode == 0 &&
+diff --git a/lib/gx/fifo.cpp b/lib/gx/fifo.cpp
+index 3c62a6d..0e7644d 100644
+--- a/lib/gx/fifo.cpp
++++ b/lib/gx/fifo.cpp
+@@ -25,7 +25,9 @@ uint32_t sDlWritePos = 0;
+ namespace {
+ constexpr Module Log{"aurora::gx::fifo"};
+ ProcessingMode sProcessingMode = ProcessingMode::Thread;
+-constexpr uint32_t kDrawBatchSize = 1;
++// Draws handed to the worker at once: waking it is a system call, too costly for every draw
++// of a heavy frame (drain() still hands over everything at frame ends and sync points)
++constexpr uint32_t kDrawBatchSize = 16;
+ 
+ bool sFrameActive = false;
+ uint32_t sPendingDraws = 0;
+@@ -53,7 +55,11 @@ void process_to(uint64_t target, std::memory_order order) noexcept {
+   while (processed < target) {
+     ProcessResult result{};
+     {
+-      std::lock_guard lock{sBufferMutex};
++      // Inline/drain processing runs on the producer's thread: nothing to lock out
++      std::unique_lock lock{sBufferMutex, std::defer_lock};
++      if (sProcessingMode == ProcessingMode::Thread) {
++        lock.lock();
++      }
+       AURORA_ASSERT(processed >= sStreamBase && target <= sStreamBase + detail::sBufferSize,
+                     "FIFO processing range [{}, {}) is outside buffered range [{}, {})", processed, target, sStreamBase,
+                     sStreamBase + detail::sBufferSize);
+@@ -69,7 +75,9 @@ void process_to(uint64_t target, std::memory_order order) noexcept {
+     }
+     processed += result.bytesProcessed;
+     sProcessed.store(processed, order);
+-    sProcessed.notify_all();
++    if (sProcessingMode == ProcessingMode::Thread) {
++      sProcessed.notify_all();
++    }
+   }
+ }
+ 
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index f992bfb..0e9c2b1 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -388,6 +388,9 @@ struct GXState {
+   float projXScale = 1.f;
+   float projYScale = 1.f;
+   float projXOffsetScale = 1.f; // perspective x offset (row 0, z column) only, on top of projXScale
++  float projXAdd = 0.f;         // NDC shift (HUD anchored to a screen edge), after the scales
++  // Widescreen HUD: 2D pieces clearly on one side move to that edge (AuroraSetHudAnchoring).
++  bool hudAnchoring = false;
+   // Widescreen: letterboxed frames (XFB much shorter than the logical frame buffer, e.g. 304
+   // lines for cutscenes) are presented stretched to the full height, their draws compensated.
+   bool letterboxFill = false;
+@@ -460,6 +463,10 @@ inline void apply_widescreen_scale(Mat4x4<float>& proj) noexcept {
+     const float x = s.projXScale;
+     proj.m0 = proj.m0 * Vec4{x, x, x * s.projXOffsetScale, x};
+   }
++  if (s.projXAdd != 0.f) {
++    // x_ndc += add: x_clip += add * w
++    proj.m0 = proj.m0 + proj.m3 * Vec4{s.projXAdd, s.projXAdd, s.projXAdd, s.projXAdd};
++  }
+   if (s.projYScale != 1.f) {
+     const float y = s.projYScale;
+     proj.m1 = proj.m1 * Vec4{y, y, y, y};

@@ -1,0 +1,140 @@
+diff --git a/include/dolphin/gx/GXAurora.h b/include/dolphin/gx/GXAurora.h
+index 60a64be..962d392 100644
+--- a/include/dolphin/gx/GXAurora.h
++++ b/include/dolphin/gx/GXAurora.h
+@@ -91,6 +91,15 @@ extern "C" {
+ 
+ #define GX_AURORA_LOAD_DISP_COPY_SRC 0x003B
+ 
++/**
++ * Where the next display copies land in the external frame buffer, for games that build
++ * one XFB from several copies (e.g. top and bottom halves rendered in separate EFB passes).
++ * Followed by:
++ *   s32 destination line within the XFB (logical lines)
++ *   u32 XFB height in logical lines (0 = the copy alone is the XFB, the default)
++ */
++#define GX_AURORA_LOAD_DISP_COPY_DST 0x003C
++
+ /**
+  * Draw primitives with the vertex count derived from a byte length, as written by
+  * GXBegin(prim, fmt, GX_AUTO). Must be followed by a u8 draw opcode (vtxfmt|prim),
+diff --git a/lib/dolphin/gx/GXFrameBuffer.cpp b/lib/dolphin/gx/GXFrameBuffer.cpp
+index 85c29e7..755251a 100644
+--- a/lib/dolphin/gx/GXFrameBuffer.cpp
++++ b/lib/dolphin/gx/GXFrameBuffer.cpp
+@@ -63,7 +63,16 @@ void copy_disp(GXBool clear) noexcept {
+   const auto clearColor = clear && g_gxState.colorUpdate;
+   const auto clearAlpha = clear && g_gxState.alphaUpdate && efb_has_alpha(g_gxState.pixelFmt);
+   const auto clearDepth = clear && g_gxState.depthUpdate;
+-  gfx::copy_disp(rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor, clear_depth_value());
++  // Destination within a composed XFB, scaled like the source rect (logical -> host pixels).
++  s32 dstY = 0;
++  u32 xfbHeight = 0;
++  if (g_gxState.xfbHeight != 0 && g_gxState.dispCopySrc.height > 0) {
++    const float scale = static_cast<float>(rect.height) / static_cast<float>(g_gxState.dispCopySrc.height);
++    dstY = static_cast<s32>(static_cast<float>(g_gxState.dispCopyDstY) * scale + 0.5f);
++    xfbHeight = static_cast<u32>(static_cast<float>(g_gxState.xfbHeight) * scale + 0.5f);
++  }
++  gfx::copy_disp(rect, clearColor, clearAlpha, clearDepth, g_gxState.clearColor, clear_depth_value(), dstY,
++                 xfbHeight);
+ }
+ 
+ void clear_efb(const gfx::ClipRect& logicalRect, bool wholeTarget, bool clearColor, bool clearAlpha, bool clearDepth,
+diff --git a/lib/gfx/encoding.cpp b/lib/gfx/encoding.cpp
+index 7f05dc6..d3573db 100644
+--- a/lib/gfx/encoding.cpp
++++ b/lib/gfx/encoding.cpp
+@@ -340,6 +340,7 @@ void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& passInfo,
+     };
+     const wgpu::TexelCopyTextureInfo dst{
+         .texture = passInfo.xfbDst,
++        .origin = wgpu::Origin3D{.x = 0, .y = passInfo.xfbDstY},
+     };
+     const wgpu::Extent3D size{
+         .width = static_cast<uint32_t>(passInfo.xfbRect.width),
+diff --git a/lib/gfx/frame_packet.hpp b/lib/gfx/frame_packet.hpp
+index a49f144..f9f5abf 100644
+--- a/lib/gfx/frame_packet.hpp
++++ b/lib/gfx/frame_packet.hpp
+@@ -101,6 +101,7 @@ struct RenderPass {
+   wgpu::Texture snapshotNormalDst;
+   wgpu::Texture xfbDst;
+   ClipRect xfbRect;
++  uint32_t xfbDstY = 0; // line within a composed XFB
+   float clearDepthValue = 1.f;
+   wgpu::LoadOp depthLoadOp = wgpu::LoadOp::Undefined;
+   wgpu::StoreOp depthStoreOp = wgpu::StoreOp::Store;
+diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
+index c2e51f5..00767d4 100644
+--- a/lib/gfx/recording.cpp
++++ b/lib/gfx/recording.cpp
+@@ -1070,17 +1070,25 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
+ }
+ 
+ void copy_disp(ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth, Vec4<float> clearColorValue,
+-               float clearDepthValue) {
++               float clearDepthValue, int32_t dstY, uint32_t xfbHeight) {
+   auto& prevPass = current_render_passes()[g_recorder.currentRenderPass];
+   const auto& color = prevPass.colorAttachments[SceneColorAttachmentIndex];
+   const auto left = std::clamp<int32_t>(rect.x, 0, static_cast<int32_t>(color.size.width));
+   const auto top = std::clamp<int32_t>(rect.y, 0, static_cast<int32_t>(color.size.height));
+   const auto right = std::clamp<int32_t>(rect.x + rect.width, left, static_cast<int32_t>(color.size.width));
+-  const auto bottom = std::clamp<int32_t>(rect.y + rect.height, top, static_cast<int32_t>(color.size.height));
++  auto bottom = std::clamp<int32_t>(rect.y + rect.height, top, static_cast<int32_t>(color.size.height));
++  if (xfbHeight != 0) {
++    // Composed XFB: this copy fills lines [dstY, dstY + height) of an XFB xfbHeight tall.
++    dstY = std::clamp<int32_t>(dstY, 0, static_cast<int32_t>(xfbHeight));
++    bottom = std::min<int32_t>(bottom, top + static_cast<int32_t>(xfbHeight) - dstY);
++  } else {
++    dstY = 0;
++  }
+   if (right > left && bottom > top) {
+-    prevPass.xfbDst =
+-        acquire_xfb(static_cast<uint32_t>(right - left), static_cast<uint32_t>(bottom - top), color.format).texture;
++    const auto height = xfbHeight != 0 ? xfbHeight : static_cast<uint32_t>(bottom - top);
++    prevPass.xfbDst = acquire_xfb(static_cast<uint32_t>(right - left), height, color.format).texture;
+     prevPass.xfbRect = {.x = left, .y = top, .width = right - left, .height = bottom - top};
++    prevPass.xfbDstY = static_cast<uint32_t>(dstY);
+   }
+   enqueue_pass(current_frame_packet(), g_recorder.currentRenderPass);
+   resume_pass_after_copy(prevPass, rect, clearColor, clearAlpha, clearDepth, clearColorValue, clearDepthValue);
+diff --git a/lib/gfx/recording.hpp b/lib/gfx/recording.hpp
+index 15f52cd..e8bb429 100644
+--- a/lib/gfx/recording.hpp
++++ b/lib/gfx/recording.hpp
+@@ -117,7 +117,7 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
+                        Vec4<float> clearColorValue, float clearDepthValue, GXTexFmt resolveFormat,
+                        GXPixelFmt sourceFormat);
+ void copy_disp(ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth, Vec4<float> clearColorValue,
+-               float clearDepthValue);
++               float clearDepthValue, int32_t dstY = 0, uint32_t xfbHeight = 0);
+ void clear_rect(ClipRect rect, bool clearColor, bool clearAlpha, bool clearDepth, Vec4<float> clearColorValue,
+                 float clearDepthValue);
+ uint32_t align_uniform(uint32_t value);
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index dbf26b7..0f5fd6c 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -717,6 +717,9 @@ void handle_aurora(ByteReader& reader) noexcept {
+     const s32 width = reader.read<s32>();
+     const s32 height = reader.read<s32>();
+     g_gxState.dispCopySrc = {left, top, width, height};
++  } else if (subCmd == GX_AURORA_LOAD_DISP_COPY_DST) {
++    g_gxState.dispCopyDstY = reader.read<s32>();
++    g_gxState.xfbHeight = reader.read<u32>();
+   } else if (subCmd == GX_AURORA_READBACK_CAPTURE_PEEKS) {
+     readback::handle_capture_peeks(reader);
+   } else if (subCmd == GX_AURORA_READBACK_CAPTURE_COPIES) {
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index 257f127..cb412e6 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -412,6 +412,8 @@ struct GXState {
+   const void* texCopyDest = nullptr;
+   absl::flat_hash_map<const void*, CopyTextureRef> copyTextures;
+   gfx::ClipRect dispCopySrc{0, 0, 640, 480};
++  s32 dispCopyDstY = 0; // GX_AURORA_LOAD_DISP_COPY_DST: line within the XFB
++  u32 xfbHeight = 0;    // XFB height in logical lines (0 = the copy alone)
+ 
+   // Cache state
+   bool drawsBlocking = false;

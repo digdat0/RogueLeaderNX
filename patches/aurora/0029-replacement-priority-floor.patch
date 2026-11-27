@@ -1,0 +1,56 @@
+diff --git a/include/aurora/texture.hpp b/include/aurora/texture.hpp
+index d3add5f..cbe8ad2 100644
+--- a/include/aurora/texture.hpp
++++ b/include/aurora/texture.hpp
+@@ -90,6 +90,10 @@ void unregister_replacements(std::span<const ReplacementRegistration> registrati
+ void unregister_replacements(const ReplacementGroup& group);
+ void unregister_replacements(const ReplacementKey& key);
+ void clear_replacements();
++// Registrations with a priority below `floor` are ignored until it is lowered again (default
++// INT32_MIN: none), without unregistering or dropping prefetched data: e.g. texture packs (priority
++// 0) switched off for a moment by a hotkey while higher-priority replacements stay.
++void set_replacement_priority_floor(int32_t floor);
+ 
+ ReplacementGroup load_replacement_directory(const std::filesystem::path& root, ReplacementOptions options = {});
+ void reload_replacement_directory(const std::filesystem::path& root, ReplacementGroup& group,
+diff --git a/lib/gfx/texture_replacement.cpp b/lib/gfx/texture_replacement.cpp
+index ce141fd..2af2f96 100644
+--- a/lib/gfx/texture_replacement.cpp
++++ b/lib/gfx/texture_replacement.cpp
+@@ -134,6 +134,7 @@ struct ReplacementKeyHash {
+ };
+ 
+ std::mutex s_registryMutex;
++int32_t s_priorityFloor = INT32_MIN; // registrations below it are ignored (set_replacement_priority_floor)
+ absl::flat_hash_map<ReplacementKey, std::vector<ReplacementEntry>, ReplacementKeyHash> s_entriesByKey;
+ absl::flat_hash_map<ReplacementKey, SelectedCache, ReplacementKeyHash> s_cacheByKey;
+ absl::flat_hash_set<uint64_t> s_failedIds;
+@@ -1099,6 +1100,9 @@ void cache_replacement_locked(const ReplacementKey& key, uint64_t id, gfx::Textu
+ const ReplacementEntry* select_entry(const std::vector<ReplacementEntry>& entries) noexcept {
+   const ReplacementEntry* selected = nullptr;
+   for (const auto& entry : entries) {
++    if (entry.priority < s_priorityFloor) {
++      continue;
++    }
+     if (selected == nullptr || entry.priority > selected->priority ||
+         (entry.priority == selected->priority && entry.sequence > selected->sequence)) {
+       selected = &entry;
+@@ -1626,6 +1630,18 @@ void clear_replacements() {
+   clear_prefetched_replacements();
+ }
+ 
++void set_replacement_priority_floor(int32_t floor) {
++  {
++    std::lock_guard lk(s_registryMutex);
++    if (s_priorityFloor == floor) {
++      return;
++    }
++    s_priorityFloor = floor;
++    gx::clear_static_texture_cache();
++  }
++  gx::texture::invalidate_bindings();
++}
++
+ ReplacementRegistration register_virtual_replacement(std::string_view path, VirtualFileSource source,
+                                                      ReplacementOptions options) {
+   if (source.read == nullptr) {

@@ -1,0 +1,15 @@
+diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
+index 2d10095..e221700 100644
+--- a/lib/gx/shader.cpp
++++ b/lib/gx/shader.cpp
+@@ -751,7 +751,9 @@ enum class NbtSlice : u8 {
+ auto attr_load_nbt_slice(const ShaderConfig& config, NbtSlice slice, std::string_view vidx) -> std::string {
+   const auto& mapping = config.attrs[GX_VA_NRM];
+   if (mapping.attrType == GX_NONE || mapping.cnt != 9) {
+-    Log.fatal("attr_load_nbt_slice: GX_TG_BINRM/TANGENT requires GX_NRM_NBT or GX_NRM_NBT3");
++    // Hardware uses the binormal/tangent the vertex unit last held; with no NBT data in the
++    // vertex format, zero is the closest stateless value (an emboss texgen then adds no shift).
++    return "vec3f(0.0, 0.0, 0.0)";
+   }
+   const auto sliceIdx = static_cast<u32>(slice);
+   const auto compsize = comp_type_size(GX_VA_NRM, static_cast<GXCompType>(mapping.compType));

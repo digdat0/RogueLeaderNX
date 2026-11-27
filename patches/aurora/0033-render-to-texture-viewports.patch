@@ -1,0 +1,89 @@
+diff --git a/lib/dolphin/gx/GXFrameBuffer.cpp b/lib/dolphin/gx/GXFrameBuffer.cpp
+index fa279a0..a1d9cf3 100644
+--- a/lib/dolphin/gx/GXFrameBuffer.cpp
++++ b/lib/dolphin/gx/GXFrameBuffer.cpp
+@@ -97,6 +97,17 @@ aurora::gx::GXState::CopyTextureRef* enclosing_copy(const void* dest, u32 width,
+ 
+ namespace aurora::gx {
+ void copy_tex(const void* dest, GXBool clear) noexcept {
++  {
++    // remembered: draws into this rectangle (from the next frame on) render a texture
++    const auto& src = g_gxState.texCopySrc;
++    auto& rects = g_gxState.rttRects;
++    const bool known = std::any_of(rects.begin(), rects.end(), [&](const gfx::ClipRect& r) {
++      return r.x == src.x && r.y == src.y && r.width == src.width && r.height == src.height;
++    });
++    if (!known) {
++      rects[g_gxState.rttRectNext++ % rects.size()] = src;
++    }
++  }
+   const auto rect = map_logical_scissor(g_gxState.texCopySrc);
+   u32 firstRow = 0;
+   if (auto* outer = enclosing_copy(dest, g_gxState.texCopyDstWidth, g_gxState.texCopyDstHeight,
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index 426e119..35e625c 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -546,6 +546,36 @@ ProjScale ortho_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxSize,
+   return {1.f / k, 1.f / v};
+ }
+ 
++// A render-to-texture pass: drawn into a viewport narrower than the frame that is the source
++// rectangle of a texture copy (Rogue Leader's shadow maps: the craft's and the AT-ATs'
++// silhouettes, orthographic, in 128x128 / 256x256 viewports at the frame's top left, copied to
++// textures every frame). On a widened target its logical viewport stretches k times wider and
++// the copy narrows it back, so it must be drawn as the game drew it: as 2D it was kept at its 4:3
++// shape (narrower by 1 / k in the texture: shadows too narrow, toward the middle), as 3D it got
++// a k times wider view.
++bool render_to_texture_viewport() noexcept {
++  const auto& vp = g_gxState.logicalViewport;
++  if (vp.width >= static_cast<float>(logical_fb_size().x) * 0.9f) {
++    return false; // the frame itself (copies of the whole EFB: refraction, the targeting computer)
++  }
++  const bool rtt = std::any_of(g_gxState.rttRects.begin(), g_gxState.rttRects.end(), [&](const gfx::ClipRect& r) {
++    return r.width > 0 && std::abs(vp.left - static_cast<float>(r.x)) <= 2.f &&
++           std::abs(vp.top - static_cast<float>(r.y)) <= 2.f && std::abs(vp.width - static_cast<float>(r.width)) <= 2.f &&
++           std::abs(vp.height - static_cast<float>(r.height)) <= 2.f;
++  });
++  if (rtt) { // logged once per viewport (the first few)
++    static std::array<std::array<float, 4>, 8> logged{};
++    static u32 count = 0;
++    const std::array<float, 4> key{vp.left, vp.top, vp.width, vp.height};
++    if (count < logged.size() && std::find(logged.begin(), logged.begin() + count, key) == logged.begin() + count) {
++      logged[count++] = key;
++      Log.info("render-to-texture viewport {}x{} at ({}, {}): drawn without widescreen scaling", vp.width, vp.height,
++               vp.left, vp.top);
++    }
++  }
++  return rtt;
++}
++
+ ProjScale widescreen_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxSize, GXPrimitive prim) noexcept {
+   const float k = widescreen_factor();
+   const float v = k == 1.f ? 1.f : letterbox_factor();
+@@ -553,6 +583,9 @@ ProjScale widescreen_scale(GXVtxFmt fmt, const u8* verts, u32 vtxCount, u32 vtxS
+     sScenePersp = {};
+     return {};
+   }
++  if (render_to_texture_viewport()) {
++    return {};
++  }
+   if (g_gxState.projType != GX_ORTHOGRAPHIC) {
+     const ProjScale ps = perspective_scale(k, v);
+     if (std::abs(g_gxState.proj.m0[2]) < 0.01f && std::abs(g_gxState.proj.m1[2]) < 0.01f) {
+diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
+index a9af7cd..8f8bf73 100644
+--- a/lib/gx/gx.hpp
++++ b/lib/gx/gx.hpp
+@@ -439,6 +439,11 @@ struct GXState {
+ 
+   // EFB copy state
+   gfx::ClipRect texCopySrc;
++  // Source rectangles (logical) of recent texture copies: a draw into a viewport that is one of
++  // them renders a texture (shadow maps, reflections) and gets no widescreen scaling
++  // (render_to_texture_viewport, command_processor.cpp)
++  std::array<gfx::ClipRect, 8> rttRects{};
++  u32 rttRectNext = 0;
+   GXTexFmt texCopyFmt;
+   u32 texCopyDstWidth = 0;
+   u32 texCopyDstHeight = 0;
