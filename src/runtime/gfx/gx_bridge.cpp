@@ -37,6 +37,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <pthread.h>
+#include <unistd.h>  // RL-NX: usleep (bridgeShutdown)
 #if defined(__SWITCH__)
 extern "C" void melee_nx_log_flush(void);  // RL-NX: log_switch.cpp
 extern "C" int rlnxRelaunchRequested(void);   // RL-NX (2026-11-27): updater_switch.cpp
@@ -353,7 +354,7 @@ std::mutex s_ringMx;
 std::condition_variable s_workCv, s_doneCv;
 pthread_t s_worker;
 bool s_workerUp = false;
-std::atomic<bool> s_workerStop{false};  // RL-NX (2026-11-27): bridgeShutdown
+std::atomic<bool> s_workerStop{false}, s_workerDone{false};  // RL-NX: s_workerDone set as workerMain returns  // RL-NX (2026-11-27): bridgeShutdown
 bool s_peLazy = false;  // a token without an interrupt was queued: drain before the game touches PE
 // RL-NX (9.55): batched publish. ringPush used to publish every command with a seq_cst store and a seq_cst load
 // of s_workerSleeping - two full barriers per GX command, ~30k commands a frame on the one thread the port is
@@ -512,7 +513,7 @@ void* workerMain(void*) {
                 w = s_ringWr.load(std::memory_order_acquire);
             }
             if (r == w) {
-                if (s_workerStop.load(std::memory_order_acquire)) return nullptr;  // RL-NX: bridgeShutdown
+                if (s_workerStop.load(std::memory_order_acquire)) { s_workerDone.store(true, std::memory_order_release); return nullptr; }  // RL-NX: bridgeShutdown
                 std::unique_lock<std::mutex> lk(s_ringMx);
                 s_workerSleeping.store(true, std::memory_order_seq_cst);
                 if (s_ringWr.load(std::memory_order_seq_cst) == r) s_workCv.wait_for(lk, std::chrono::milliseconds(100));
@@ -620,7 +621,11 @@ void bridgeShutdown() {
     s_workerStop.store(true, std::memory_order_release);
     { std::lock_guard<std::mutex> lk(s_ringMx); }
     s_workCv.notify_all();
-    pthread_join(s_worker, nullptr);
+    // RL-NX (2026-11-27): pthread_join here never returned on hardware (log ended at "drained, stopping the worker"). Wait for the
+    // worker to say it is done (2 s at most) and leave the join to kartpad_end_threads, which reaps finished threads and
+    // reports one that never ends (plain exit then, instead of a frozen screen).
+    for (int i = 0; i < 2000 && !s_workerDone.load(std::memory_order_acquire); i++) usleep(1000);
+    logf("gfx", "relaunch: worker %s", s_workerDone.load() ? "returned" : "did not return in 2 s"); melee_nx_log_flush();
     s_workerUp = false;
     s_async.store(false, std::memory_order_relaxed);
     gxGpSetAsync(false);
