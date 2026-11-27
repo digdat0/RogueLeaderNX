@@ -122,6 +122,7 @@ std::atomic<int> s_threadWant{-1};
 std::mutex s_mx;                           // the resampler state and the device calls
 bool s_threadUp = false;
 Thread s_thread;
+std::atomic<bool> s_stop{false};  // RL-NX (2026-11-27): shutdown()
 u64 s_qFull = 0;
 
 void processBlock(const u8* data, u32 frames, u32 rate);  // below
@@ -142,7 +143,7 @@ void drainQueue() {
 void threadMain(void*) {
     melee_nx_perf_background_thread("audio out");  // perf_switch.cpp: lowest core, listed in [pm-thr]
     svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2B);  // short work that must be on time (as the DSP thread)
-    for (;;) {
+    while (!s_stop.load(std::memory_order_relaxed)) {
         drainQueue();
         svcSleepThread(2000000);  // 2 ms: blocks arrive every ~5 ms, the device holds ~128 ms
     }
@@ -184,6 +185,24 @@ void init() {
         s_threaded.store(!(e && *e == '0'), std::memory_order_relaxed);
     }
     logf("audio", "audio-out thread: %s", !s_threadUp ? "could not start, inline" : s_threaded.load() ? "on" : "off (R2_AUDIO_THREAD=0)");
+}
+
+// RL-NX (2026-11-27): the Switch relaunch (update restart): ends the audio-out thread and gives audout back, so hbloader's
+// next NRO starts with no service session or thread left from this one. Game thread, after the last block.
+void shutdown() {
+    if (s_threadUp) {
+        s_stop.store(true);
+        threadWaitForExit(&s_thread);
+        threadClose(&s_thread);
+        s_threadUp = false;
+        s_threaded.store(false, std::memory_order_relaxed);
+    }
+    if (s_up) {
+        s_up = false;
+        audoutStopAudioOut();
+        audoutExit();
+    }
+    logf("audio", "audio shut down for the relaunch");
 }
 
 namespace {

@@ -14,6 +14,7 @@ void init();  // with Aurora's pads: registers the input layer that collects sen
 // once per retrace from input::poll, after PADRead: adds the gyro to port 1's main stick.
 // joy: the input thread's controller lock is held (SDL's controller API may be called)
 void apply(PADStatus& port1, bool joy);
+bool flying();  // RL-NX (2026-11-27): the player's craft flies now
 void setFlight(bool flying);  // each game frame (hle_game.cpp): the player's craft flies
 // the controller whose gyro is read (empty: none found) - for the menu
 std::string controllerName();

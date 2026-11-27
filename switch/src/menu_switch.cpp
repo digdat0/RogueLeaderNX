@@ -16,6 +16,7 @@
 #include <switch.h>
 
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -45,6 +46,17 @@ bool cpLagOn();
 void setHdTextures(bool on);  // RL-NX (Stage 12): HD TEXTURES - Dolphin-format packs from sdmc:/switch/RL-NX/mods/hd
 bool hdTexturesOn();
 }
+namespace rt::input {
+bool rumbleOn();  // RL-NX (2026-11-27): RUMBLE / INVERT FLIGHT rows (input.cpp)
+void setRumbleOn(bool on);
+bool invertFlightOn();
+void setInvertFlight(bool on);
+}
+extern "C" void rlUpdaterActivate(void);  // RL-NX (2026-11-27): the UPDATE row (updater_switch.cpp)
+extern "C" int rlUpdaterState(int* percent, char* tag, size_t tagSize);
+extern "C" void rlUpdaterMessage(char* out, size_t size);
+extern "C" void rl_log_set_extra(int on);  // RL-NX (2026-11-27): GAME LOGGING row (log_switch.cpp)
+extern "C" int rl_log_extra_on;
 namespace rt {
 void gxSetFastPipe(bool on);  // RL-NX (Stage 4): FAST PIPE - gather pipe stores straight into the buffer (gx_fifo.cpp)
 bool gxFastPipe();
@@ -87,8 +99,8 @@ namespace rt::gfx {
 
 // RL-NX (2026-11-27): two tabs. Game (FRAME RATE, HD TEXTURES) always; Debug (everything else) only with R2_DEBUG_MENU=1
 // (boot.cfg or menu.cfg), as SFA-NX's debug_menu=1. HD TEX 2048 is gone (the 2048 limit keeps its default, R2_HD_LIMIT=0 in boot.cfg lifts it).
-enum Row { kFrameRate = 0, kStatsLog, kProfiler, kPerfLog, kGpuTiming, kGxThread, kGpThread, kAudioThread, kFastPipe, kGpRaw, kFrameOverlap, kNativeMtx, kVmCensus, kNativeMovie, kCpLag, kHdTextures, kAsyncVblank, kDspFast, kRowCount };
-constexpr int kGameRows[] = {kFrameRate, kHdTextures};
+enum Row { kFrameRate = 0, kStatsLog, kProfiler, kPerfLog, kGpuTiming, kGxThread, kGpThread, kAudioThread, kFastPipe, kGpRaw, kFrameOverlap, kNativeMtx, kVmCensus, kNativeMovie, kCpLag, kHdTextures, kAsyncVblank, kDspFast, kInvertFlight, kRumble, kGameLog, kRowCount, kUpdate = kRowCount };  // kUpdate is an action row (rlUpdater*), not a switch: no s_on / pref
+constexpr int kGameRows[] = {kFrameRate, kInvertFlight, kRumble, kHdTextures, kGameLog, kUpdate};
 constexpr int kDebugRows[] = {kStatsLog, kProfiler, kPerfLog, kGpuTiming, kGxThread, kGpThread, kAudioThread, kFastPipe, kGpRaw,
                               kFrameOverlap, kNativeMtx, kVmCensus, kNativeMovie, kCpLag, kAsyncVblank, kDspFast};
 constexpr int kGameN = int(sizeof kGameRows / sizeof kGameRows[0]), kDebugN = int(sizeof kDebugRows / sizeof kDebugRows[0]);
@@ -129,6 +141,9 @@ void syncRows() {
     s_on[kHdTextures].store(hdTexturesOn(), std::memory_order_relaxed);           // RL-NX (Stage 12)
     s_on[kAsyncVblank].store(asyncVblankOn(), std::memory_order_relaxed);         // RL-NX (audit 2026-11-27)
     s_on[kDspFast].store(rt::musyxFastOn(), std::memory_order_relaxed);           // RL-NX (audit 2026-11-27)
+    s_on[kInvertFlight].store(rt::input::invertFlightOn(), std::memory_order_relaxed);  // RL-NX (2026-11-27)
+    s_on[kRumble].store(rt::input::rumbleOn(), std::memory_order_relaxed);
+    s_on[kGameLog].store(rl_log_extra_on != 0, std::memory_order_relaxed);
 }
 
 // RL-NX: saved rows. Every switch of a row writes all rows to config/menu.cfg as the boot.cfg names that set
@@ -137,7 +152,7 @@ void syncRows() {
 // delete it to go back to boot.cfg and the defaults. PROFILER has no boot.cfg form without a time limit
 // (R2_PROFILE=<seconds>), so it is saved as R2_PROFILER and switched on from boot by menuApplyBootPrefs.
 constexpr const char* kPrefKeys[kRowCount] = {"R2_FPS", "R2_STATS", "R2_PROFILER", "R2_PERFLOG", "R2_GPU_TIMING",
-                                              "R2_BRIDGE_THREAD", "R2_GP_THREAD", "R2_AUDIO_THREAD", "R2_FAST_PIPE", "R2_GP_RAW", "R2_FRAME_OVERLAP", "R2_NATIVE_MTX", "R2_VM_CENSUS", "R2_NATIVE_MOVIE", "R2_CP_LAG", "R2_HD_TEXTURES", "R2_ASYNC_VBLANK", "R2_DSP_FAST"};  // RL-NX (2026-11-27): R2_HD_LIMIT row removed (an old menu.cfg line is ignored)
+                                              "R2_BRIDGE_THREAD", "R2_GP_THREAD", "R2_AUDIO_THREAD", "R2_FAST_PIPE", "R2_GP_RAW", "R2_FRAME_OVERLAP", "R2_NATIVE_MTX", "R2_VM_CENSUS", "R2_NATIVE_MOVIE", "R2_CP_LAG", "R2_HD_TEXTURES", "R2_ASYNC_VBLANK", "R2_DSP_FAST", "R2_INVERT_FLIGHT", "R2_RUMBLE", "R2_GAME_LOG"};  // RL-NX (2026-11-27): R2_HD_LIMIT row removed (an old menu.cfg line is ignored)
 constexpr const char* kPrefDir = "sdmc:/switch/RL-NX/config";
 constexpr const char* kPrefPath = "sdmc:/switch/RL-NX/config/menu.cfg";
 constexpr const char* kPrefTmp = "sdmc:/switch/RL-NX/config/menu.cfg.tmp";
@@ -179,12 +194,15 @@ void apply(int row, bool on) {
     case kCpLag: setCpLag(on); break;                         // RL-NX (Stage 11): at the next vblank
     case kHdTextures: setHdTextures(on); break;               // RL-NX (Stage 12): at the next vblank
     case kAsyncVblank: setAsyncVblank(on); break;             // RL-NX (audit 2026-11-27): at the next vblank
+    case kInvertFlight: rt::input::setInvertFlight(on); break;   // RL-NX (2026-11-27): at once
+    case kRumble: rt::input::setRumbleOn(on); break;             // RL-NX (2026-11-27): at once (off also stops a running rumble)
+    case kGameLog: rl_log_set_extra(on ? 1 : 0); break;          // RL-NX (2026-11-27): extra detail in logs/log.txt for bug reports
     case kDspFast: rt::musyxSetFast(on); break;               // RL-NX (audit 2026-11-27): at the next DSP list
     default: return;
     }
     s_on[row].store(on, std::memory_order_relaxed);
     savePrefs();  // RL-NX: remembered for the next boot (config/menu.cfg)
-    static const char* const kLogNames[kRowCount] = {"frame rate", "stats lines", "profiler", "perf log", "gpu timing", "gx thread", "gp thread", "audio thread", "fast pipe", "gp raw", "frame overlap", "native mtx", "vm census", "native movie", "cp lag", "hd textures", "async vblank", "dsp fast"};  // RL-NX (Stage 12)  // RL-NX (Stage 11)  // RL-NX (Stage 10)  // RL-NX (Stage 9)  // RL-NX (Stage 7)  // RL-NX (Stage 6); cpu boost removed
+    static const char* const kLogNames[kRowCount] = {"frame rate", "stats lines", "profiler", "perf log", "gpu timing", "gx thread", "gp thread", "audio thread", "fast pipe", "gp raw", "frame overlap", "native mtx", "vm census", "native movie", "cp lag", "hd textures", "async vblank", "dsp fast", "invert flight", "rumble", "game logging"};  // RL-NX (Stage 12)  // RL-NX (Stage 11)  // RL-NX (Stage 10)  // RL-NX (Stage 9)  // RL-NX (Stage 7)  // RL-NX (Stage 6); cpu boost removed
     rt::logf("menu", "perf: %s %s", kLogNames[row], on ? "on" : "off");
 }
 
@@ -219,7 +237,10 @@ void pollPad() {
     if (up) sel = (sel + n - 1) % n;
     if (down) sel = (sel + 1) % n;
     s_sel.store(sel, std::memory_order_relaxed);
-    if (sw) apply(rows[sel], !s_on[rows[sel]].load(std::memory_order_relaxed));
+    if (sw) {
+        if (rows[sel] == kUpdate) rlUpdaterActivate();  // RL-NX: check / download / install + restart, one step a press
+        else apply(rows[sel], !s_on[rows[sel]].load(std::memory_order_relaxed));
+    }
 }
 
 }  // namespace
@@ -285,6 +306,10 @@ void menuApplyBootPrefs() {
     if (const char* e = getenv("R2_NATIVE_MTX"); e && *e) rt::setNativeMtx(*e != '0');
     rt::logf("opts", "native mtx: %s (R2_NATIVE_MTX / - menu NATIVE MTX)", rt::nativeMtxOn() ? "on" : "off");
     if (const char* e = getenv("R2_VM_CENSUS"); e && *e == '1') rt::vmCensusSet(true);
+    // RL-NX (2026-11-27): the Game rows. RUMBLE is on unless R2_RUMBLE=0; INVERT FLIGHT and GAME LOGGING are off unless =1
+    if (const char* e = getenv("R2_RUMBLE"); e && *e == '0') rt::input::setRumbleOn(false);
+    if (const char* e = getenv("R2_INVERT_FLIGHT"); e && *e && *e != '0') rt::input::setInvertFlight(true);
+    if (const char* e = getenv("R2_GAME_LOG"); e && *e && *e != '0') rl_log_set_extra(1);
     // RL-NX (Stage 10): NATIVE MOVIE is on unless R2_NATIVE_MOVIE=0
     if (const char* e = getenv("R2_NATIVE_MOVIE"); e && *e) rt::setNativeMovie(*e != '0');
     rt::logf("opts", "native movie: %s (R2_NATIVE_MOVIE / - menu NATIVE MOVIE)", rt::nativeMovieOn() ? "on" : "off");
@@ -308,7 +333,7 @@ extern "C" bool rl_nx_menu_draw() {
     static const float kBg[4] = {0.02f, 0.04f, 0.09f, 1.0f};
     static const float kBgRow[4] = {0.10f, 0.16f, 0.30f, 1.0f};
     static const float kLine[4] = {0.30f, 0.42f, 0.70f, 1.0f};
-    static const char* const kNames[kRowCount] = {"FRAME RATE", "STATS LOG", "PROFILER", "PERF LOG", "GPU TIMING", "GX THREAD", "GP THREAD", "AUDIO THREAD", "FAST PIPE", "GP RAW", "FRAME OVERLAP", "NATIVE MTX", "VM CENSUS", "NATIVE MOVIE", "CP LAG", "HD TEXTURES", "ASYNC VBLANK", "DSP FAST"};
+    static const char* const kNames[kRowCount] = {"FRAME RATE", "STATS LOG", "PROFILER", "PERF LOG", "GPU TIMING", "GX THREAD", "GP THREAD", "AUDIO THREAD", "FAST PIPE", "GP RAW", "FRAME OVERLAP", "NATIVE MTX", "VM CENSUS", "NATIVE MOVIE", "CP LAG", "HD TEXTURES", "ASYNC VBLANK", "DSP FAST", "INVERT FLIGHT", "RUMBLE", "GAME LOGGING"};
 
     const bool debug = s_debug.load(std::memory_order_relaxed);
     const int tab = debug ? s_tab.load(std::memory_order_relaxed) : 0;
@@ -368,9 +393,29 @@ extern "C" bool rl_nx_menu_draw() {
         const int rowY = y + i * lineH;
         if (here) swdk::draw_rect(cx - pad / 2, rowY - 4, contentW + pad, lineH, kBgRow);
         char buf[40];
-        snprintf(buf, sizeof buf, "%c %s", here ? '>' : ' ', kNames[r]);
+        snprintf(buf, sizeof buf, "%c %s", here ? '>' : ' ', r == kUpdate ? "UPDATE" : kNames[r]);
         const char* lines[1] = {buf};
         swdk::draw_text(cx, rowY, scale, lines, 1, here ? kGold : kText, here ? kBgRow : kBg);
+        if (r == kUpdate) {  // RL-NX: the updater's state as short text (A does the next step)
+            int pct = 0;
+            char tag[32] = {}, msg[64] = {}, txt[20] = {};
+            const int st = rlUpdaterState(&pct, tag, sizeof tag);
+            rlUpdaterMessage(msg, sizeof msg);
+            switch (st) {  // updater_switch.cpp State: 0 idle 1 checking 2 up to date 3 available 4 downloading 5 ready 6 failed
+            case 0: snprintf(txt, sizeof txt, "A: CHECK"); break;
+            case 1: snprintf(txt, sizeof txt, "CHECKING..."); break;
+            case 2: snprintf(txt, sizeof txt, "UP TO DATE"); break;
+            case 3: snprintf(txt, sizeof txt, "A: GET %s", tag); break;
+            case 4: snprintf(txt, sizeof txt, "GETTING %d%%", pct); break;
+            case 5: snprintf(txt, sizeof txt, "A: RESTART"); break;
+            default: snprintf(txt, sizeof txt, "%s", msg); break;
+            }
+            for (char* p = txt; *p; ++p) *p = char(toupper(static_cast<unsigned char>(*p)));
+            if (strlen(txt) > 15) txt[15] = '\0';
+            const char* val[1] = {txt};
+            swdk::draw_text(cx + 9 * cw, rowY, scale, val, 1, st == 6 ? kDim : kGreen, here ? kBgRow : kBg);
+            continue;
+        }
         const bool on = s_on[r].load(std::memory_order_relaxed);
         const char* val[1] = {on ? "ON" : "OFF"};
         swdk::draw_text(cx + 19 * cw, rowY, scale, val, 1, on ? kGreen : kDim, here ? kBgRow : kBg);

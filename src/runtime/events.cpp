@@ -135,8 +135,10 @@ u64 s_detTb = 0;
 u64 s_detPeriod = 0;
 }  // namespace
 
+std::atomic<bool> s_timerStop{false};  // RL-NX (2026-11-27): eventsShutdown, the Switch relaunch
+
 void timerThread() {
-    for (;;) {
+    while (!s_timerStop.load(std::memory_order_relaxed)) {
         const u64 e = s_earliest.load();
         const u64 now = tbNow();
         if (e <= now) {
@@ -161,6 +163,9 @@ void timerThread() {
 // RL-NX (PERF_PLAN phase 0b): R2_DETERMINISTIC=1 - the guest's own clock. Defined outside the anonymous
 // namespace above because the frame hook in switch/src/host_switch.cpp calls detAdvanceFrame.
 bool deterministicClock() { return s_det; }
+
+// RL-NX (2026-11-27): ends the timer thread (the menu's update restart returns to hbloader, so no thread may outlive the image)
+void eventsShutdown() { s_timerStop.store(true, std::memory_order_relaxed); }
 
 void detInit() {
     const char* v = getenv("R2_DETERMINISTIC");

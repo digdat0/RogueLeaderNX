@@ -1,188 +1,150 @@
-# Red Two
+# RL-NX: Rogue Leader for Nintendo Switch
 
-<!-- RL-NX: this file documents Red Two on PC (upstream). The Nintendo Switch port's own README, with
-     its status, decisions, known issues and remaining work, is README.PORT.md. -->
-> **Nintendo Switch port:** status, decisions, compromises and open work are in
-> [`README.PORT.md`](README.PORT.md) (this file is upstream Red Two for PC).
+Star Wars Rogue Squadron II: Rogue Leader (GameCube, USA, `GSWE64` revision 0) running natively on a
+Nintendo Switch as a homebrew `.nro`.
 
-[![release](https://img.shields.io/github/v/release/gminustwo/red_two?filter=v%2A&sort=semver&display_name=tag&label=release&color=orange)](https://github.com/gminustwo/red_two/releases/latest)
-[![downloads](https://img.shields.io/github/downloads/gminustwo/red_two/total?label=downloads&color=brightgreen)](https://github.com/gminustwo/red_two/releases)
+It is a Switch port of [Red Two](https://github.com/gminustwo/red_two) by gminustwo, a static
+recompilation of the game: the game's own PowerPC code is translated to C++ ahead of time and runs on a
+runtime that stands in for the GameCube's hardware. Graphics go through
+[Aurora](https://github.com/encounter/aurora) onto deko3d (the Switch's native GPU API); the audio DSP
+is emulated in software. **No game data is included.** You need your own disc image of the USA release.
 
-A static recompilation of **Star Wars: Rogue Squadron II – Rogue Leader** (GameCube) for PC.
+> Status: playable on hardware in handheld mode at 720p. Frame rate depends on the level: menus and
+> light scenes are at or near 60 fps, the busiest levels run well below it. Speed is the open work; the
+> full log of what was done, what was measured and what is left is [`README.PORT.md`](README.PORT.md).
+> Docked output (900p / 1080p) exists but is less tested.
 
-The game's own PowerPC code is translated to C++ ahead of time and runs on a native runtime
-that stands in for the console's hardware. **No game data is included**: you need your own disc
-image of the USA release (`GSWE64`, revision 0), for the downloads as for your own build.
+## What you need
 
-**Downloads**: Windows (zip) and Linux / Steam Deck (AppImage) builds are on the
-[Releases](../../releases) page. They contain the game's code in recompiled form, none of its data:
-start it and choose your disc image (`.iso`, `.gcm`, `.rvz` or `.wia`, wherever it is) on the
-launcher's disc page: type or paste its path, pick it in the file dialog, or find it in the
-built-in browser (controller-friendly). Red Two remembers it; one next to the program is also
-found by itself.
-Or build Red Two yourself (below): the build recompiles the game from your disc. The Windows zip
-is portable (everything of yours stays in its `user` folder) and brings the Visual C++ runtime
-with it; it needs a CPU with AVX2 (Intel Haswell / AMD Ryzen or newer) and says so otherwise.
+- A Nintendo Switch running custom firmware with the Homebrew Menu (hbmenu).
+- **Title takeover.** Start the homebrew by holding **R** while launching a game, not from the Album.
+  Applet mode leaves too little memory for the game's 256 MiB address space, and the port says so on
+  screen if it detects it.
+- Your own disc image of Rogue Leader (USA, rev 0): `.iso`, `.gcm`, `.rvz` or `.wia`.
 
-> Status: playable on Windows and Linux (also packaged as an AppImage for the Steam Deck):
-> menus, cutscenes and missions at full speed with graphics (Aurora), sound (an emulation of the
-> MusyX audio DSP), controls, saving, save states, widescreen, mods, cheats and RetroAchievements.
+## Installing
 
-## Building (Windows)
+Copy `RL-NX.nro` and your disc image into the same folder on the SD card:
 
-Requirements: Visual Studio 2022 Build Tools (C++), CMake 3.25+, Ninja, clang-cl (LLVM).
-
-```powershell
-# 1. Build: recompiles the game straight from your disc image (RVZ, WIA, ISO or GCM)
-powershell -ExecutionPolicy Bypass -File tools\build.ps1 -Disc "<your Rogue Leader.rvz>"
-
-# 2. Run
-build\windows\red_two.exe --disc "<your Rogue Leader.rvz>"
+```
+sdmc:/switch/RL-NX/RL-NX.nro
+sdmc:/switch/RL-NX/<your Rogue Leader disc>.rvz      (any name; one image only)
 ```
 
-Without `--disc` the game takes the disc chosen in the launcher before (F1 > DISPLAY > Game disc),
-else looks for `orig\GSWE64.iso`, `orig\GSWE64.rvz`, `GSWE64.rvz`, `GSWE64.iso` and any GSWE64
-image next to the program or in the user folder, else the launcher asks for it.
-`tools\rvz.py` (Python + libzstd) can still extract a disc or convert it to ISO.
+Start it from the Homebrew Menu under title takeover. The first start builds the shader cache, which takes
+a little longer than later starts. The game creates its other folders itself:
 
-The code generated from your disc ends up in `build/` and is yours alone: never share it.
+| Folder | What is in it |
+|---|---|
+| `config/` | `menu.cfg` (the in-game menu's saved settings), Aurora's `input.json`, an optional `boot.cfg` |
+| `cache/` | shader and pipeline caches, downloaded updates |
+| `logs/` | `log.txt` for the last run (see *Reporting a problem*) |
+| `saves/` | the memory card image |
+| `mods/hd/` | optional HD texture pack (below) |
 
-`tools\make_release_win.ps1` packs a build into `build\RedTwo-windows-x64.zip` (the program, its
-symbols, DLLs, a readme) for your own use on another PC.
+Saves are a GameCube memory card image in `saves/`. A `.raw` card from Dolphin or Nintendont can be copied
+there as it is.
 
-## Building (Linux) and the Steam Deck AppImage
+## The `-` menu
 
-Requirements: clang, lld, CMake 3.25+, Ninja, git, and SDL3's build dependencies (X11, Wayland,
-xkbcommon, ALSA / PulseAudio / PipeWire, udev and D-Bus development packages). Ubuntu 24.04 (also
-under WSL2) works; the result needs glibc 2.38 or later (SteamOS 3.6+).
+Tap **Minus** to open the options panel over the game and tap it again to close it. While it is open the
+game sees no controller input.
 
-```bash
-tools/build_linux.sh --disc "<your Rogue Leader.rvz>"     # -> build/linux/red_two
-# an AppImage: the AppImage type 2 runtime (github.com/AppImage/type2-runtime, runtime-x86_64),
-# mksquashfs and patchelf
-tools/make_appimage.sh --runtime runtime-x86_64 --icon <256x256 png>   # -> build/linux/RedTwo-x86_64.AppImage
-```
+- **Up / Down** moves, **A** switches the row.
+- **L / R** (or **Left / Right**) changes the tab when the Debug tab is shown.
 
-On the Steam Deck: copy the AppImage and your disc image (`.rvz` / `.iso`, any name) into the
-same folder (or the disc into `~/Emulation/roms/gc`), make the AppImage executable, and add it
-to Steam as a non-Steam game. The first start on a Deck is fullscreen with the picture as wide
-as the screen. Settings, saves, states and logs live in `~/.local/share/Red Two/`.
+**Game tab**
 
-### Playing
+| Row | What it does |
+|---|---|
+| FRAME RATE | shows the frame counter at the top of the screen |
+| INVERT FLIGHT | flips the stick's up/down while you are flying a craft (off by default) |
+| RUMBLE | controller vibration on or off (on by default) |
+| HD TEXTURES | uses the HD texture pack, if one is installed (below) |
+| GAME LOGGING | adds detail to the log for bug reports (off by default) |
+| UPDATE | looks for a newer release on GitHub and installs it |
 
-- **Launcher**: Red Two opens on its settings (the same pages as the in-game menu) before the
-  game starts. Start game (the first row) or the controller's START launches it. Turn off
-  "Show launcher at start" there to go straight into the game from then on; the in-game menu
-  (F1 or Back) has the same switch and "Back to launcher". `--launcher` / `--no-launcher` override
-  the setting for one start. A reset from the menu goes straight back into the game.
-- Gamepads work through SDL (with rumble), also while the window is in the background. On an
-  Xbox-style pad the face buttons follow the GameCube positions: A = A (fire), X (left) = B,
-  B (right) = X, Y = Y; LT/RT = L/R, RB = Z, right stick = C-stick, Menu = Start. Keyboard: WASD or arrows steer, Space = A (fire),
-  Left Shift = B, E = X, Q = Y, R = Z, 1/2 = L/R, Enter = Start, IJKL = C-stick, TFGH = D-pad.
-- The game's button prompts show your controller's buttons (the one each GameCube button is
-  bound to, e.g. "PRESS (Y)" and SELECT CRAFT's "(B) > pilot"): the PlayStation symbols on a
-  PS3 / PS4 / PS5 controller, the Xbox buttons on any other. F1 > Controls > Button prompts
-  picks Automatic, Xbox, PlayStation or the original GameCube ones. The C-stick icon stays.
-- **Control stick** (F1 > Controls): stick sensitivity (25-200%) and a round deadzone (0-50%,
-  both sticks; the output grows from zero at its edge, so small aiming moves are smooth), with a
-  meter showing the stick and what the game gets.
-- F11 or Alt+Enter toggles fullscreen; `--fullscreen` starts that way.
-- **Graphics** (F1, DISPLAY): internal resolution up to 4K, 4x MSAA anti-aliasing (from the next
-  start; WebGPU offers no other sample count) and anisotropic filtering up to 16x.
-- **Where your files are**: on Windows a `user` folder next to `red_two.exe` (the zip has one)
-  holds settings, the memory card, save states, logs, texture packs, codes and the shader cache,
-  so the folder can live anywhere (another drive, a NAS). An install that has no `user` folder
-  but an older `%APPDATA%\Red Two` keeps using that one; create `user` to make it portable (its
-  first start copies the settings, controls and memory card over). Linux: `~/.local/share/Red Two/`.
-- **Cheats** (F1 > Cheats): invincibility, infinite lives, infinite bombs, perfect mission
-  stats (the results screen says 0:01, every enemy destroyed, 100% accuracy, no friendlies or
-  lives lost and 100% targeting computer efficiency, and the medal is awarded for those), and
-  all craft (every craft a mission allows waits in its hangar). **Passcodes**: the game's own
-  unlocks without typing codes - all missions, all tech upgrades, ace mode, art gallery, music
-  hall, documentary, audio commentary, credits, black and white - kept in the game's save as
-  if the codes had been entered.
-- **RetroAchievements** (F1 > Achievements): log in with your retroachievements.org account
-  (only the login token is stored) or take Dolphin's login; softcore only, so save states and
-  cheats stay usable. Unlocks pop up in the top right corner.
-- **Reset game**, **Back to launcher** and **Quit to desktop** are at the top of the menu's first page.
-- **Save states**: Back + RB saves, Back + LB loads, Back + D-pad right / left picks the slot
-  (8 slots; keyboard F5 / F8, F7 / F6). F1 > Controls has the slot, save / load buttons and the
-  hotkeys, each any combination of buttons (or keys) held together: pick the row, press A, hold
-  the buttons, let go. On a controller Back alone (released with nothing else pressed) still
-  opens the menu. States live in the user folder's `states` and also load after a restart, but
-  only into the same build of Red Two (a rebuild makes them "OLD"). The memory card is not part
-  of a state: loading one does not undo the game's own saves.
-- Saves go to the user folder's `saves/GSWE64_A.raw` (slot A; the game formats a new card). A
-  `.raw` card from Dolphin or Nintendont can be copied there as it is, whatever its size (59 to
-  2043 blocks). `R2_CARD_A=<path>` uses another card image.
-- **Mods** (F1, MODS tab): texture packs in Dolphin's format go in the user folder's
-  `textures\` (a `GSWE64` folder inside, exactly as in Dolphin's
-  `Load\Textures`; `.dds` and `.png`, mip files and wildcards work), or stay wherever you unpacked
-  them: MODS -> Texture pack folder opens a folder browser (d-pad / stick, A opens, X goes up, B
-  back) - pick the pack's folder (the one holding `GSWE64`, or `GSWE64` itself), e.g. in Downloads
-  or on an SD card. Back + D-pad up (F9) turns the texture packs off and on again at once, to
-  compare (rebindable in Controls). Gecko / Action Replay codes and
-  patches go in the user folder's `codes.ini` (Dolphin's GameSettings format) and can be switched
-  in the menu. The game is recompiled ahead of time, so codes that change its code (Gecko C2
-  "insert ASM", writes into code) cannot work; the menu marks them as not supported.
-- **Importing from Dolphin**: MODS -> IMPORT FROM DOLPHIN, or
-  `red_two.exe --import-dolphin[=saves,textures,codes] --console`. Red Two finds Dolphin's user
-  folder (AppData, Documents, a portable install, the registry, a custom Load folder in
-  `Dolphin.ini`) and brings over this game's newest save (from GCI folders or `.raw` cards; the
-  previous card is kept in `saves\backup`, and the game restarts), its texture packs (copied) and
-  its codes (with their on/off states). `R2_DOLPHIN_DIR=<User folder>` points it elsewhere.
-- **Shaders** (F1, DISPLAY -> PERFORMANCE): "Prepare shaders at start" (on) compiles every shader
-  the game has used on this device before it starts; off, the game starts at once and objects may
-  pop in while their shaders compile. "Ubershaders" (on; off on a Steam Deck's first start) draws
-  not-yet-compiled objects with a generic shader instead of skipping them.
-- `R2_NO_AUDIO=1` runs without sound. Every session writes a log to the user folder's `logs`
-  (Linux: `~/.local/share/Red Two/logs`); `--console` shows it in a console window on Windows.
+The **Debug** tab (performance and diagnostic switches) is hidden by default. Add the line
+`R2_DEBUG_MENU=1` to `sdmc:/switch/RL-NX/config/boot.cfg` to show it. Normal play needs no `boot.cfg`.
+
+Settings are remembered between runs. Delete `config/menu.cfg` to go back to the defaults.
+
+## HD textures
+
+RL-NX can load a Dolphin-format texture pack from `sdmc:/switch/RL-NX/mods/hd/`.
+
+**Credit goes to General_Han_Solo for the HD texture pack.** Nothing was changed in the textures except
+down-sampling them to a size that performs well on the Switch 1. The conversion tool,
+[`switch/tools/hd_pack_shrink.py`](switch/tools/hd_pack_shrink.py), is in this repository: run it on the
+original pack with a different preset if you want a different size trade-off, for example higher
+resolution.
+
+- Down-sampled pack for the Switch (download): <https://mega.nz/file/IMdn2JQC#6VKreFPqE9n9Oyxu58Kpo3mcaDSFdwHkkxvephdvlzg>
+- Original pack: <https://emulationking.com/nintendo/gamecube/games/starwarsroguesquadroniirogueleader/texturepacks/generalhansolo/>
+- Dolphin Emulator Forum thread: <https://forums.dolphin-emu.org/Thread-star-wars-rogue-leader-rebel-strike-jedi-knight-23rd-march-2026>
+
+To use it, unpack the pack's `GSWE64` folder into `sdmc:/switch/RL-NX/mods/hd/`, then switch **HD TEXTURES**
+on in the `-` menu.
+
+## Updating
+
+The **UPDATE** row in the Game tab asks GitHub for the latest release of
+[digdat0/RogueLeaderNX](https://github.com/digdat0/RogueLeaderNX/releases). If there is a newer release it
+offers to download it; if there is none, nothing is offered. After the download it asks to restart and
+starts the new version by itself. You can also copy a new `RL-NX.nro` over the old one by hand.
 
 ## Reporting a problem
 
-Open an issue on the [Issues](../../issues/new/choose) page and pick **Bug report** (or **Feature
-request** for an idea): the form asks for what helps. Please check the open issues first, and
-report one problem per issue. What to have at hand:
+Open an issue on the [Issues](../../issues/new/choose) page. Please include:
 
-- **Red Two's version**: under the menu's title (F1, or the controller's Back / Select), e.g.
-  "VERSION 1.2". Newer versions may already fix it: the menu offers updates at the top of its
-  first page.
-- **What happened and where**: the mission (or menu, cutscene) and the moment, whether it happens
-  every time, and how to get there.
-- **The session log (required)**: a bug report needs the log of the play session where the
-  problem happened. Every start of Red Two writes a new one, named by the date and time it
-  started, so if you started Red Two again afterwards, the newest log is from that later start:
-  pick the right one by its date and time, and drag it into the issue. It's in:
-  - Windows: `user\logs` next to `red_two.exe` (an older install without a `user` folder:
-    `%APPDATA%\Red Two\logs`)
-  - Steam Deck / Linux: `~/.local/share/Red Two/logs`
+- the version (shown in the log's first line),
+- what happened, in which mission or menu, and whether it happens every time,
+- **the log**: `sdmc:/switch/RL-NX/logs/log.txt` from the session where it happened (copy it before
+  starting the game again, because each start replaces it). Turn **GAME LOGGING** on in the `-` menu first
+  if you can, since it adds detail. The log shows paths from your SD card but nothing else personal,
+- a screenshot or a short video for anything you can see.
 
-  It lists your settings, the frame rate every 30 seconds, and what the game was doing in a
-  freeze or a crash. It also shows folder paths, which can include your user name: edit those
-  out if you like.
-- **Your setup**: the controller (and whether Steam starts Red Two), your display and aspect
-  ratio, a texture pack if you use one.
-- **A screenshot or a short video** for anything you can see.
+## Building
 
-A save state from just before the problem can help too, but states only load into the build that
-made them: mention that you have one, and we'll ask for it if needed.
+Requirements: devkitPro with devkitA64 and the Switch portlibs, CMake 3.25+, Ninja, Git Bash on Windows
+(or any POSIX shell), and your own disc image. The first build recompiles the game from your disc into
+`build-switch/gen/`, which is yours alone and is never committed or shared.
+
+```bash
+bash switch/tools/prepare-refs.sh   # once: fetches the reference trees
+bash switch/build-dawn.sh           # once
+bash switch/build-sdl.sh            # once
+
+RL_NX_DEKO=1 bash switch/build.sh 8     # -> build-switch/RL-NX.nro (deko3d, the console build)
+```
+
+`switch/README.md` covers the toolchain and a black-screen checklist, `AGENTS.md` is the working brief
+(build, test and measurement recipes), and `README.PORT.md` is the full port log.
 
 ## How it works
 
-`tools/rvz.py` and `src/common/disc_image.cpp` read the disc; the recompiler (`src/recompiler`)
-finds the game's functions in `main.dol` without symbols and writes them out as C++ - including the
-second executable the game hides inside `main.dol` and runs from its own demand-paged virtual
-memory. The runtime (`src/runtime`) stands in for the console: the CPU state and MMU, threads on
-host fibers, the GameCube's hardware at the register level (video, disc, audio DSP, ARAM, memory
-card, controllers), and a bridge that hands the GPU command stream to
-[Aurora](https://github.com/encounter/aurora) for rendering. Names we gave the game's functions are
-in `config/GSWE64/symbols.txt`.
+`src/recompiler` finds the game's functions in `main.dol` and writes them out as C++. `src/runtime` is the
+GameCube's hardware at register level (CPU state and MMU, threads on host fibers, video, disc, audio DSP,
+ARAM, memory card, controllers). GX commands go to Aurora, which `switch/deko` renders with deko3d and
+`switch/uam` compiles shaders for the Switch's GPU. The Switch layer (`switch/src`) holds the SD card
+layout, logging, audio output, the menu and the updater.
+
+## Credits
+
+- **Red Two** by gminustwo, the static recompilation this port is built on.
+- **Aurora** by encounter, the GX renderer.
+- **General_Han_Solo**, the HD texture pack (see above).
+- **davy** on SteamGridDB, the Rogue Leader icon art (https://www.steamgriddb.com/grid/544663).
+- Switch homebrew groundwork from KartPadNX, Melee-NX and SwitchWaker (notices in `switch/licenses/`).
+- devkitPro, libnx, deko3d, uam and the Switch homebrew community.
+
+The port was made by digdat0. The previous README for upstream Red Two on PC is kept in
+[`docs/README.RedTwoPC.md`](docs/README.RedTwoPC.md).
 
 ## Legal
 
-Red Two is released under the [MIT License](LICENSE). It covers this repository's own code
-only, not the game's code that a build (and the prebuilt downloads) contain in recompiled form.
-
-This repository contains no code or assets from the game. Star Wars and Rogue Leader are
-trademarks of Lucasfilm Ltd.; GameCube is a trademark of Nintendo. This project is not
-affiliated with or endorsed by them.
+This repository's own code is under the licences in `LICENSE` and `switch/licenses/`: Red Two and Aurora
+are MIT, deko3d is zlib, Dawn is Apache-2.0, and the Switch layer is GPL-3.0 with MPL-2.0 file-level pieces.
+It contains no code or assets from the game. Star Wars and Rogue Leader are trademarks of Lucasfilm Ltd.;
+Nintendo Switch and GameCube are trademarks of Nintendo. This project is not affiliated with or endorsed
+by them.

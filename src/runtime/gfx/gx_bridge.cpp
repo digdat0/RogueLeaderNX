@@ -37,6 +37,10 @@
 #include <condition_variable>
 #include <mutex>
 #include <pthread.h>
+#if defined(__SWITCH__)
+extern "C" int rlnxRelaunchRequested(void);   // RL-NX (2026-11-27): updater_switch.cpp
+extern "C" void rlnxRelaunchTeardown(void);  // relaunch_switch.cpp, does not return
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -348,6 +352,7 @@ std::mutex s_ringMx;
 std::condition_variable s_workCv, s_doneCv;
 pthread_t s_worker;
 bool s_workerUp = false;
+std::atomic<bool> s_workerStop{false};  // RL-NX (2026-11-27): bridgeShutdown
 bool s_peLazy = false;  // a token without an interrupt was queued: drain before the game touches PE
 // RL-NX (9.55): batched publish. ringPush used to publish every command with a seq_cst store and a seq_cst load
 // of s_workerSleeping - two full barriers per GX command, ~30k commands a frame on the one thread the port is
@@ -506,6 +511,7 @@ void* workerMain(void*) {
                 w = s_ringWr.load(std::memory_order_acquire);
             }
             if (r == w) {
+                if (s_workerStop.load(std::memory_order_acquire)) return nullptr;  // RL-NX: bridgeShutdown
                 std::unique_lock<std::mutex> lk(s_ringMx);
                 s_workerSleeping.store(true, std::memory_order_seq_cst);
                 if (s_ringWr.load(std::memory_order_seq_cst) == r) s_workCv.wait_for(lk, std::chrono::milliseconds(100));
@@ -599,6 +605,21 @@ void bridgeStartWorker() {
     gxGpSetAsync(gp);
     logf("gfx", "GP thread: %s (R2_GP_THREAD / - menu GP THREAD)", gp ? "on, the CP stream is split on the worker" : "off");
     logf("gfx", "GP raw split: %s (R2_GP_RAW / - menu GP RAW)", gxGpRaw() ? "on, the worker splits the raw CP bytes" : "off, the game thread walks");  // RL-NX (Stage 6)
+}
+
+// RL-NX (2026-11-27): the Switch relaunch (the updater's restart): lets the worker finish everything queued, ends it and joins it.
+// Game thread. After this every GX command runs on the calling thread.
+void bridgeShutdown() {
+    if (!s_workerUp) return;
+    bridgeDrain(RLPM_DRAIN_STATE);
+    s_workerStop.store(true, std::memory_order_release);
+    { std::lock_guard<std::mutex> lk(s_ringMx); }
+    s_workCv.notify_all();
+    pthread_join(s_worker, nullptr);
+    s_workerUp = false;
+    s_async.store(false, std::memory_order_relaxed);
+    gxGpSetAsync(false);
+    logf("gfx", "bridge worker ended for the relaunch");
 }
 
 #if defined(__SWITCH__)
@@ -746,6 +767,16 @@ void peBarrier(int kind) {
 
 void ensureFrame() {
     if (s_inFrame) return;
+#if defined(__SWITCH__)
+    // RL-NX (2026-11-27): the updater asked to leave (installed an update, or a restart): at a frame boundary, with no frame
+    // open, end the threads and return to hbloader (relaunch_switch.cpp). Never returns.
+    {
+        if (rlnxRelaunchRequested()) {
+            bridgeShutdown();
+            rlnxRelaunchTeardown();
+        }
+    }
+#endif
     pollEvents();
     s_inFrame = aurora_begin_frame();
     if (s_inFrame && s_testClear) {

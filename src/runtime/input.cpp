@@ -121,6 +121,7 @@ void defaultKeyboard() {
 // only try that mutex (JoystickAccess): while a scan runs they keep the previous state. Aurora's
 // controller state itself comes from SDL events, which the window's event pump still delivers.
 std::mutex s_joyMutex;
+std::atomic<bool> s_joyStop{false}, s_joyRunning{false}, s_joyDone{false};  // RL-NX (2026-11-27): inputShutdown
 
 void joystickThread() {
 #ifdef _WIN32
@@ -133,7 +134,8 @@ void joystickThread() {
     auto next = std::chrono::steady_clock::now();
 #endif
     u64 lastLog = 0;
-    for (;;) {
+    s_joyRunning.store(true);
+    while (!s_joyStop.load(std::memory_order_relaxed)) {
 #ifdef _WIN32
         WaitForSingleObject(timer, INFINITE);
 #else
@@ -155,6 +157,7 @@ void joystickThread() {
                  double(t1 - t0) * 1000.0 / double(kTbClock));
         }
     }
+    s_joyDone.store(true);
 }
 
 // R2_JOY_SCAN_TEST=<seconds>: from then on, every 5 s the input thread holds SDL's joystick lock
@@ -180,6 +183,10 @@ void scanTest() {
 
 PADStatus s_lastPads[PAD_CHANMAX] = {};  // what PADRead gave last (reused while a scan runs)
 u32 s_rumbleWant[PAD_CHANMAX] = {}, s_rumbleSent[PAD_CHANMAX] = {};
+// RL-NX (2026-11-27): the - menu's Game rows. RUMBLE (on by default): off sends every pad a stop and drops what the game
+// asks for. INVERT FLIGHT (off by default): while the player's craft flies (gyro::flying) the main stick's Y is negated
+// before the game reads it, so up pitches down. Menus and on-foot parts of the game are untouched.
+std::atomic<bool> s_rumbleOn{true}, s_invertFlight{false};
 
 void applyRumble() {  // JoystickAccess held
     for (u32 i = 0; i < PAD_CHANMAX; i++)
@@ -653,8 +660,27 @@ void init(bool pads) {
     s_ready = true;
 }
 
+// RL-NX (2026-11-27): - menu rows RUMBLE / INVERT FLIGHT (menu_switch.cpp)
+bool rumbleOn() { return s_rumbleOn.load(std::memory_order_relaxed); }
+void setRumbleOn(bool on) {
+    s_rumbleOn.store(on, std::memory_order_relaxed);
+    if (!on) {
+        for (int i = 0; i < PAD_CHANMAX; i++) s_rumbleWant[i] = 0;
+        if (s_pads)
+            if (JoystickAccess joy; joy) applyRumble();
+    }
+}
+// RL-NX (2026-11-27): ends the joystick thread before SDL is shut down (it calls SDL_UpdateJoysticks)
+void inputShutdown() {
+    s_joyStop.store(true);
+    for (int i = 0; i < 200 && s_joyRunning.load() && !s_joyDone.load(); i++) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+}
+bool invertFlightOn() { return s_invertFlight.load(std::memory_order_relaxed); }
+void setInvertFlight(bool on) { s_invertFlight.store(on, std::memory_order_relaxed); }
+
 void rumble(int chan, u32 cmd) {
     if (!s_pads || chan < 0 || chan > 3) return;
+    if (!s_rumbleOn.load(std::memory_order_relaxed)) cmd = 0;  // RL-NX: RUMBLE off
     s_rumbleWant[chan] = cmd;
     if (JoystickAccess joy; joy) applyRumble();  // else at the next poll
 }
@@ -706,6 +732,8 @@ void poll() {
         for (int i = 0; i < PAD_CHANMAX; i++)
             if (auto& e = st[i]; e.err == PAD_ERR_NONE) {
                 mainStickToGame(float(e.stickX) / 127.f, float(e.stickY) / 127.f, e.stickX, e.stickY);
+                if (s_invertFlight.load(std::memory_order_relaxed) && gyro::flying())  // RL-NX: INVERT FLIGHT
+                    e.stickY = e.stickY == -128 ? s8(127) : s8(-e.stickY);
                 cStickToGame(float(e.substickX) / 127.f, float(e.substickY) / 127.f, e.substickX, e.substickY);
                 curvePort(e, i);
             }

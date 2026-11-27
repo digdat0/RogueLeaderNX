@@ -22,6 +22,7 @@ u8* aramBase();  // hw.cpp: the 16 MiB of ARAM
 void aiTraceEvent(char kind, u32 v);  // hw.cpp: R2_AI_LOG's audio event trail
 
 namespace audio {
+void shutdown();  // RL-NX (2026-11-27): Switch relaunch (audio_switch.cpp)
 void init();  // host audio output (SDL3); R2_NO_AUDIO=1 for none, R2_AUDIO_DUMP=<file.wav>
 // One AI DMA block as it starts playing: big-endian 16-bit stereo frames.
 void push(const u8* data, u32 frames, u32 rate);

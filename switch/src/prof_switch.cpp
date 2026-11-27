@@ -508,6 +508,9 @@ void dump(const char* why) {
 extern "C" __attribute__((noinline, used)) void rl_nx_prof_anchor(void) { __asm__ volatile(""); }
 
 // Called from the main (game) thread by the - menu.
+// RL-NX (2026-11-27): the relaunch cannot end the sampler / writer threads, so it falls back to a plain exit when they ran
+extern "C" int rlProfThreadsStarted(void) { return (g_threadStarted || g_writerStarted) ? 1 : 0; }
+
 extern "C" void rlProfSetEnabled(int on) {
     if ((on != 0) == g_enabled.load()) {
         return;

@@ -21,10 +21,14 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <sys/stat.h>  // RL-NX: mkdir for cache/
 
 // Foxhollow's logger, and its request to leave the main loop cleanly (saves settings, shuts the GPU down).
 extern "C" void pc_log_line(const char* fmt, ...);
-extern "C" void fhRequestQuit(void);
+// RL-NX (2026-11-27): the updater asks the game to leave at its next frame boundary (gx_bridge.cpp ensureFrame ->
+// relaunch_switch.cpp), which returns to hbloader when a relaunch was requested and ends the process otherwise.
+static bool g_quitGo = false;
+extern "C" int rlnxRelaunchRequested(void) { return g_quitGo ? 1 : 0; }
 
 // Set by CMake from PROJECT_VERSION; the fallback only keeps the file compiling on its own.
 #ifndef RL_NX_VERSION
@@ -33,7 +37,7 @@ extern "C" void fhRequestQuit(void);
 
 namespace {
 
-constexpr const char* kLatestUrl = "https://api.github.com/repos/digdat0/rogue-leader-nx/releases/latest";
+constexpr const char* kLatestUrl = "https://api.github.com/repos/digdat0/RogueLeaderNX/releases/latest";
 constexpr const char* kAssetName = "RL-NX.nro";
 constexpr const char* kAppDir = "sdmc:/switch/RL-NX/";
 // The download goes to cache/ so the app folder only ever holds the NRO, the disc image and folders.
@@ -334,6 +338,7 @@ bool download_one(const Asset& asset, std::string* why) {
 
 // Worker thread for "download": copies the asset list under the lock, then downloads each asset.
 void download_worker() {
+    mkdir("sdmc:/switch/RL-NX/cache", 0777);  // RL-NX: the download goes to cache/update.nro
     std::vector<Asset> assets;
     std::string tag;
     {
@@ -451,7 +456,7 @@ extern "C" void rlRelaunch(void) {
     } else {
         pc_log_line("[rl-nx] restart: no relaunch available, quitting");
     }
-    fhRequestQuit();
+    g_quitGo = true;
 }
 
 // Restart path (vi_shim.c's shutdown_and_exit): closes curl and the socket service if the updater opened them.
@@ -490,10 +495,16 @@ extern "C" void rlUpdaterActivate(void) {
         } else {
             pc_log_line("[rl-nx] updater: installed; no relaunch available");
         }
-        fhRequestQuit();
+        g_quitGo = true;
     } else {
         g_busy.store(true);
         set_state(kChecking, "Checking");
         std::thread(check_worker).detach();
     }
+}
+
+// RL-NX (2026-11-27): the last message (e.g. "No release found", "Up to date (v1.2)"), for the menu's UPDATE row
+extern "C" void rlUpdaterMessage(char* out, size_t size) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    std::snprintf(out, size, "%s", g_message.c_str());
 }

@@ -97,6 +97,9 @@ void banner(const char* fmt, ...) {
 
 }  // namespace
 
+extern "C" void rlUpdaterSetNroPath(const char* path);  // RL-NX (2026-11-27): updater_switch.cpp
+extern "C" void rlUpdaterApplyPending(void);
+
 int main(int argc, char** argv) {
     consoleInit(NULL);
     // RL-NX: before anything redirects stdout (see s_screenFd): the boot report has to be readable
@@ -113,6 +116,9 @@ int main(int argc, char** argv) {
     mkdir(RL_SD_ROOT "/config", 0777);        // RL-NX: boot.cfg, menu.cfg, Aurora's input.json
     mkdir(RL_SD_ROOT "/cache", 0777);         // RL-NX: deko/ shaders, aurora/ caches, update.nro
     mkdir(RL_SD_ROOT "/cache/aurora", 0777);  // Aurora's pipeline cache (dawn_cache.db) and bindings
+    // RL-NX (2026-11-27): the in-game updater: where this NRO lives (argv[0]), and the leftovers of the last update
+    rlUpdaterSetNroPath(argc > 0 ? argv[0] : nullptr);
+    rlUpdaterApplyPending();
     const int logFd = open(RL_LOG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (logFd >= 0 && melee_nx_log_capture_stdio(logFd))
         printf("RL-NX (Rogue Leader) %s, build %s\n", "0.1", rl_build_stamp);
