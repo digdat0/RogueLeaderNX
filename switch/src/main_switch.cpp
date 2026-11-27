@@ -98,17 +98,15 @@ void banner(const char* fmt, ...) {
 
 }  // namespace
 
+extern "C" void aurora_switch_dk_boot_screen(const char* title, float fraction, const char* detail, const char* hint);  // RL-NX: deko/device.cpp
 extern "C" void rlUpdaterSetNroPath(const char* path);  // RL-NX (2026-11-27): updater_switch.cpp
 extern "C" void rlUpdaterApplyPending(void);
 
 int main(int argc, char** argv) {
-    consoleInit(NULL);
-    // RL-NX: before anything redirects stdout (see s_screenFd): the boot report has to be readable
-    // on the console, where a user with a black screen can see how far the boot got.
-    s_screenFd = dup(STDOUT_FILENO);
-    printf("RL-NX (Rogue Leader) %s\n", "0.1");
-    printf("build %s\n\n", rl_build_stamp);
-    consoleUpdate(NULL);  // RL-NX: the console draws nothing until an update - show the two lines above
+    // RL-NX (2026-11-27): no text console any more. It showed a boot report for a moment before the renderer took the
+    // screen (a flash on every start) and was where "no disc image" was said. The first thing on screen is now the
+    // ROGUELEADERNX LOADING page, and the missing-disc message is drawn there (below). banner() writes the log only.
+    s_screenFd = -1;
 
     // The SD card is on the console too (from here on everything printf'd is there, and this is
     // where the boot's own log lines go: a console screen cannot be attached to a bug report).
@@ -122,7 +120,7 @@ int main(int argc, char** argv) {
     rlUpdaterApplyPending();
     const int logFd = open(RL_LOG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (logFd >= 0 && melee_nx_log_capture_stdio(logFd))
-        printf("RL-NX (Rogue Leader) %s, build %s\n", "0.1", rl_build_stamp);
+        printf("RL-NX (Rogue Leader) %s, build %s\n", "0.1", rl_build_stamp);  // RL-NX: the log's first line
     else
         printf("warning: no log file at %s\n", RL_LOG_PATH);
 
@@ -162,19 +160,19 @@ int main(int argc, char** argv) {
 
     const std::string disc = rt::findDiscSwitch();
     if (disc.empty()) {
-        banner("no disc image: put your Rogue Leader .iso/.rvz in");
-        banner("  %s", RL_SD_ROOT);
-        banner("(the game reads the disc; nothing is bundled with this build)");
+        // RL-NX (2026-11-27): said on the loading page (the renderer is brought up for it, which is all that is needed to
+        // draw text), not on a text console. The boot font has upper case only. + leaves, as the console screen did.
+        banner("no disc image: put your Rogue Leader .iso/.rvz in %s", RL_SD_ROOT);
+        rt::gfx::switchInit();
         PadState pad = {};
         padInitializeDefault(&pad);
-        banner("press + to exit");
         while (appletMainLoop()) {
             padUpdate(&pad);
             if (padGetButtonsDown(&pad) & HidNpadButton_Plus) break;
-            consoleUpdate(NULL);  // RL-NX: keep the console drawing while it waits
+            aurora_switch_dk_boot_screen("ROGUELEADERNX", -1.0f, "NO DISC IMAGE FOUND",
+                                         "PUT YOUR ROGUE LEADER .ISO OR .RVZ IN SDMC:/SWITCH/RL-NX   PRESS + TO EXIT");
         }
-        consoleExit(NULL);
-        return 0;
+        exit(0);  // wrapped: flushes the log and ends the process, as a quit from the game does
     }
     banner("disc: %s", disc.c_str());
     if (!rt::discOpen(disc)) rt::fatal("cannot open the disc image %s", disc.c_str());
@@ -187,11 +185,6 @@ int main(int argc, char** argv) {
     // (nwindowConfigureBuffer answers LibnxError_AlreadyInitialized, and the release library aborts
     // inside dkSwapchainCreate), so the swapchain was skipped on a console - the game ran and the
     // screen stayed black. The boot report has been shown; everything from here is in logs/log.txt.
-    if (s_screenFd >= 0) {
-        close(s_screenFd);
-        s_screenFd = -1;
-    }
-    consoleExit(NULL);
     rt::gfx::switchInit();  // Aurora: GX runs, the swapchain takes the window it just got back (§E 4)
     rt::audio::init();      // audout output, before the DSP starts producing blocks
     rt::hwInit();
